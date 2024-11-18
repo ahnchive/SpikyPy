@@ -2,9 +2,18 @@ import numpy as np
 from matplotlib import pyplot as plt
 import os
 import json
+from PolyfaceUtil import get_room_loc
 
-def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', eye_interaction=False, 
-            continuous_only=False):
+# predefine color for different rooms, corridor has white color
+room_color = {'circle': 'red', 'rectangle': 'aqua',
+              'diamond': 'green', 'triangle': 'yellow',
+              'corridor': 'purple'
+              }
+
+
+def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', 
+                eye_interaction=False, spatial_overlay=False,
+                continuous_only=False):
     """ Visualizing the raster plot for a single trial. The
     plot is divided into different blocks based on a set of discrete events.
     It also supports using background color to incorporate eye interactions
@@ -14,6 +23,7 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', eye_interacti
         trial_data: preprocessed dictionary.
         paradigm: paradigm for visualization.
         eye_interaction: adding eye interaction data or not.
+        spatial_overlay: add spatial position as background color
         save_dir: directory for the saved visualization.
         continuous_only: only consider continuous trials (Polyface only).
     """
@@ -34,6 +44,10 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', eye_interacti
 
     # one plot for each trial
     for trial_idx in range(len(trial_data['Paradigm'][paradigm]['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 217:
+            break
+
         # skip easy trials 
         if continuous_only and not trial_data['Paradigm'][paradigm]['isContinuous']:
             continue
@@ -64,6 +78,23 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', eye_interacti
             if paradigm == 'PolyFaceNavigator' and event == 'End':
                 event = cur_type
             plt.axvline(x = trial_data['Paradigm'][paradigm][event][trial_idx]-trial_onset, color = 'b', linewidth=2)
+
+        # add spatial background
+        if spatial_overlay:
+            ax = plt.gca()
+            room_block = get_room_loc(trial_data['Paradigm'][paradigm]['Player'][trial_idx],
+                                      trial_data['Paradigm'][paradigm]['Start'][trial_idx],
+                                      trial_data['Paradigm'][paradigm][cur_type][trial_idx])
+
+            for room in room_block:
+                for block in room_block[room]:
+                    # filter the cue phase
+                    if block[1] <= trial_data['Paradigm'][paradigm]['Off'][trial_idx]:
+                        continue
+                    elif block[0] <= trial_data['Paradigm'][paradigm]['Off'][trial_idx]:
+                        block[0] = trial_data['Paradigm'][paradigm]['Off'][trial_idx]
+
+                    ax.axvspan(block[0]-trial_onset, block[1]-trial_onset, facecolor=room_color[room], alpha=0.2)
 
         # save the plot
         fig.set_size_inches(10, 10)

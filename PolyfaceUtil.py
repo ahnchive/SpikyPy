@@ -7,6 +7,19 @@ import json
 import re
 import time
 
+
+# room boundary of the polyface task
+PolyFaceLayout = {'circle': [[-5, -1], [-6.4, -2]],
+               'rectangle': [[1.6, 4.7], [-5.2, 2.7]],
+               'diamond': [[-5.4, -0.5], [-0.5, 4.5]],
+               'triangle': [[-11.8, -5.4], [4.4, 10.6]],
+                }
+
+CorridorLayout = [[[-5.8, -4.2], [3, 4.8]],
+                [[-3, -2.24], [-1.9, -0.56]],
+                [[-0.83, 1.7], [-4.3, -3.6]],
+                [[-0.33, 1.75], [1.2, 1.95]]]
+
 def find_closest(number, num_list):
     diff = np.abs(number-num_list)
     return np.argmin(diff)
@@ -115,6 +128,198 @@ def MinosEyeConversion(eye_x, eye_y, eye_z, stim_size):
         projected_x.append(eye_x[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5*(9/16)+0.5)
         projected_y.append(eye_y[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5+0.5)
     return projected_x, projected_y
+
+def check_corridor(x, z):
+    flag = False
+    for corridor in CorridorLayout:
+        if (x >= corridor[0][0] and x <= corridor[0][1]
+                            and z >= corridor[1][0] and z <= corridor[1][1]):
+            flag = True
+            break
+
+    return flag        
+
+def get_room_loc(player_data, trial_start, trial_end):
+    """ finding the real-time location of the player (w.r.t. rooms and corridors).
+
+        Inputs:
+            player_data: preprocessed player data for the current trial.
+            trial_start: trial_end time.
+            trial_end: trial_end time.
+        Returns:
+            A dictionary storing room locations over time (in blocks)
+    """
+
+    loc_data = np.array(player_data['Pos'])
+    cur_room = None
+    prev_start = None
+    room_block = {'circle': [], 'diamond': [], 'triangle': [],
+                  'rectangle': [], 'corridor': []}
+    for i in range(len(loc_data)):
+        x, z = loc_data[i, 0], loc_data[i, 2]
+        
+        if check_corridor(x, z):
+            tmp_room = 'corridor'
+        else:
+            tmp_room = None
+            for room in PolyFaceLayout:
+                if (x >= PolyFaceLayout[room][0][0] and x <= PolyFaceLayout[room][0][1]
+                    and z >= PolyFaceLayout[room][1][0] and z <= PolyFaceLayout[room][1][1]):
+                    tmp_room = room
+                    break
+            if tmp_room is None:
+                continue 
+
+        if cur_room is None:
+            cur_room = tmp_room
+            room_block[cur_room].append([trial_start, player_data['SyncedTime'][i]])
+            prev_start = player_data['SyncedTime'][i]
+        elif tmp_room != cur_room:
+            room_block[cur_room].append([prev_start, player_data['SyncedTime'][i]])
+            cur_room = tmp_room
+            prev_start = player_data['SyncedTime'][i]
+    
+    # somehow the player data stopped when the monkey is not moving
+    room_block[cur_room].append([prev_start, trial_end])
+
+    return room_block
+
+def convert_face_pos(body_pos, body_rot):
+    """ Convert the face location given the recorded body location.
+    """
+    # local head position
+    head_local = [0.096, 1.695, 0.101]
+
+    # Convert rotation angle from degrees to radians
+    theta = math.radians(body_rot)
+    
+    # Calculate sine and cosine of the rotation angle
+    cos_theta = math.cos(theta)
+    sin_theta = math.sin(theta)
+    
+    # Extract local coordinates
+    x_local, y_local, z_local = head_local
+    
+    # Apply rotation around the y-axis
+    x_rotated = cos_theta * x_local + sin_theta * z_local
+    y_rotated = y_local  # Y-coordinate remains the same
+    z_rotated = -sin_theta * x_local + cos_theta * z_local
+    
+    # Translate by the object's global position
+    x_global = x_rotated + body_pos[0]
+    y_global = y_rotated + body_pos[1]
+    z_global = z_rotated + body_pos[2]
+    
+    return [x_global, y_global, z_global]    
+
+def get_face_pos(trial_info):
+    """ Get the face locations for all trials.
+        Input:
+            - trial_info: trial info load by MinosData
+        Return:
+            - A dictionary storing the converted location and label of each face
+    """
+    face_loc = dict()
+    for i in range(len(trial_info['FaceId'])):
+        if trial_info['Type'][i] == 'Stimulus':
+            continue
+        cur_num = trial_info['Number'][i]
+        if cur_num not in face_loc:
+            face_loc[cur_num] = dict()
+        face_loc[cur_num][trial_info['FaceId'][i]] = dict()
+        face_loc[cur_num][trial_info['FaceId'][i]]['isTarget'] = True if 'Correct' in trial_info['Type'][i] else False
+        
+        body_loc = [trial_info['PositionX'][i], trial_info['PositionY'][i], trial_info['PositionZ'][i]]
+        body_rot =trial_info['RotationY'][i]
+        face_loc[cur_num][trial_info['FaceId'][i]]['location'] = convert_face_pos(body_loc, body_rot)
+    
+    return face_loc
+
+def compute_ray_vector(player_location, player_yaw, object_location):
+    """
+    Computes the vector representing the ray cast from the player to the object,
+    in the player's local space, considering only rotation around the Y-axis.
+
+    Parameters:
+    - player_location: [x, y, z] coordinates of the player.
+    - player_yaw: Rotation angle around Y-axis in degrees.
+    - object_location: [x, y, z] coordinates of the object.
+
+    Returns:
+    - ray_vector: The vector in player's local space pointing from the player to the object.
+    """
+
+    # Compute the direction vector from the player to the object in world space
+    dx = object_location[0] - player_location[0]
+    dy = object_location[1] - player_location[1]
+    dz = object_location[2] - player_location[2]
+
+    # Convert yaw angle to radians and invert it for the coordinate transformation
+    yaw_rad = math.radians(-player_yaw)
+
+    # Calculate cosine and sine of the yaw angle
+    cos_yaw = math.cos(yaw_rad)
+    sin_yaw = math.sin(yaw_rad)
+
+    # Rotate the direction vector into the player's local space
+    x_local = cos_yaw * dx - sin_yaw * dz
+    y_local = dy  # Y-axis remains the same in this rotation
+    z_local = sin_yaw * dx + cos_yaw * dz
+
+    ray_vector = [x_local, y_local, z_local]
+
+    return ray_vector
+
+def compute_angle_between_vectors(v1, v2):
+    """
+    Computes the angle in degrees between two 3D vectors.
+
+    Parameters:
+    - v1: First vector [x, y, z].
+    - v2: Second vector [x, y, z].
+
+    Returns:
+    - angle_deg: The angle between the vectors in degrees.
+    """
+    # Compute the dot product of the two vectors
+    dot_product = sum(a * b for a, b in zip(v1, v2))
+    
+    # Compute the magnitudes of the vectors
+    magnitude_v1 = math.sqrt(sum(a * a for a in v1))
+    magnitude_v2 = math.sqrt(sum(b * b for b in v2))
+    
+    # Check for zero magnitude to avoid division by zero
+    if magnitude_v1 == 0 or magnitude_v2 == 0:
+        raise ValueError("Cannot compute angle with zero-length vector.")
+    
+    # Compute the cosine of the angle using the dot product formula
+    cos_theta = dot_product / (magnitude_v1 * magnitude_v2)
+    
+    # Clamp the cosine value to the valid range [-1, 1] to handle numerical errors
+    cos_theta = max(min(cos_theta, 1.0), -1.0)
+    
+    # Compute the angle in radians and then convert to degrees
+    angle_rad = math.acos(cos_theta)
+    angle_deg = math.degrees(angle_rad)
+    
+    return angle_deg
+
+def eye_face_interaction(player_data, eye_data, face_loc, tolerance=10):
+    """ Compute the interaction between eye tracking data and different faces.
+
+        Inputs:
+            - player_data: player locations for the current trials.
+            - eye_data: eye tracking data for the current trials.
+            - face_loc: processed dictionary for the location/label of each face within the environment.
+            - tolerance: consider looking at a face if the angle between eye and player-object rays is less
+                        the tolerance.
+
+        Return:
+            - A dictionary storing the time (start and end time) when looking at different faces. 
+    """
+
+    # TODO
+    pass
 
 
 def MatStruct2Dict(struct):
