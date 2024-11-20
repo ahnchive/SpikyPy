@@ -1,11 +1,11 @@
-from MinosData import MinosData
+from minos.MinosData import MinosData
 import numpy as np
 from matplotlib import pyplot as plt
 import json
 import argparse
 import os
-from PolyfaceUtil import align_trial, process_trial, get_stimulus_mapping, MinosEyeConversion
-from FixationExtraction import extract_fixations
+from polyface.PolyfaceUtil import align_trial, process_trial, get_stimulus_mapping, MinosEyeConversion
+from misc.FixationExtraction import extract_fixations
 import cv2
 from scipy.ndimage import gaussian_filter
 import math

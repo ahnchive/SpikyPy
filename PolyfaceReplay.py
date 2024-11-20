@@ -1,9 +1,9 @@
-from MinosData import MinosData
+from minos.MinosData import MinosData
 import json
 import argparse
 import os
 import numpy as np
-from PolyfaceUtil import align_trial, process_trial, get_valid_face, get_trial_json_mapping, find_closest
+from polyface.PolyfaceUtil import align_trial, process_trial, get_valid_face, get_trial_json_mapping, find_closest
 
 parser = argparse.ArgumentParser('Script for processing Minos navigation data for Minos replay', add_help=False)
 parser.add_argument('--record_path', default=None, type=str, help='Root folder storing the Minos recording')

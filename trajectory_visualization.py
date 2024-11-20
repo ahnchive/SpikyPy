@@ -5,10 +5,10 @@ import argparse
 import numpy as np
 import copy
 import os 
-from MinosData import MinosData
+from minos.MinosData import MinosData
 import imageio
 from scipy.ndimage import gaussian_filter
-from PolyfaceUtil import align_trial, process_trial, get_valid_face, get_trial_json_mapping
+from polyface.PolyfaceUtil import align_trial, process_trial, get_valid_face, get_trial_json_mapping
 
 parser = argparse.ArgumentParser('Script for visualizing the navigation trajectory in top-down view', add_help=False)
 parser.add_argument('--trial_setting', default=None, type=str, help='json file containing the trial settings')

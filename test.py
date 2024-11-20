@@ -1,7 +1,7 @@
-from MinosTypeInfo import TypeInfo
-from MinosData import MinosData
+from minos.MinosTypeInfo import TypeInfo
+from minos.MinosData import MinosData
 import numpy as np
-from PolyfaceUtil import MinosMatlabWrapper
+from polyface.PolyfaceUtil import MinosMatlabWrapper
 
 # # fpth = "/mnt/Data/RawData/Ephys/Mowgli/240820_192824_Mowgli/Minos/Player.bin"
 # # fpth = "/mnt/Data/RawData/Ephys/Fred/241112_195312_Fred/Minos/Eye.bin"
