@@ -6,7 +6,9 @@ import os
 import json
 import re
 import time
-
+import pickle
+from MiscUtil import do_intersect
+from matplotlib import pyplot as plt
 
 # room boundary of the polyface task
 PolyFaceLayout = {'circle': [[-5, -1], [-6.4, -2]],
@@ -32,6 +34,9 @@ def cropped_spike_period(spike_data, start, end):
     spike_data = [np.array(unit) for unit in spike_data]  # Convert to NumPy arrays
     return [unit[(unit > start) & (unit < end)].tolist() for unit in spike_data]
 
+def compute_distance(player, obj):
+    distance = math.sqrt(sum((player[i]-obj[i])**2 for i in range(len(player))))
+    return distance
 
 def align_trial(trial_num, behavior_data, trial_data, start_event='Start', end_event='End_Correct'):
     """ Function that aligns the start and end time of trial data
@@ -139,6 +144,15 @@ def check_corridor(x, z):
 
     return flag        
 
+def get_current_room(x, z):
+    tmp_room = None
+    for room in PolyFaceLayout:
+        if (x >= PolyFaceLayout[room][0][0] and x <= PolyFaceLayout[room][0][1]
+            and z >= PolyFaceLayout[room][1][0] and z <= PolyFaceLayout[room][1][1]):
+            tmp_room = room
+            break    
+    return tmp_room
+
 def get_room_loc(player_data, trial_start, trial_end):
     """ finding the real-time location of the player (w.r.t. rooms and corridors).
 
@@ -161,12 +175,7 @@ def get_room_loc(player_data, trial_start, trial_end):
         if check_corridor(x, z):
             tmp_room = 'corridor'
         else:
-            tmp_room = None
-            for room in PolyFaceLayout:
-                if (x >= PolyFaceLayout[room][0][0] and x <= PolyFaceLayout[room][0][1]
-                    and z >= PolyFaceLayout[room][1][0] and z <= PolyFaceLayout[room][1][1]):
-                    tmp_room = room
-                    break
+            tmp_room = get_current_room(x, z)
             if tmp_room is None:
                 continue 
 
@@ -190,26 +199,31 @@ def convert_face_pos(body_pos, body_rot):
     # local head position
     head_local = [0.096, 1.695, 0.101]
 
-    # Convert rotation angle from degrees to radians
-    theta = math.radians(body_rot)
+    # # Convert rotation angle from degrees to radians
+    # theta = math.radians(body_rot)
     
-    # Calculate sine and cosine of the rotation angle
-    cos_theta = math.cos(theta)
-    sin_theta = math.sin(theta)
+    # # Calculate sine and cosine of the rotation angle
+    # cos_theta = math.cos(theta)
+    # sin_theta = math.sin(theta)
     
-    # Extract local coordinates
-    x_local, y_local, z_local = head_local
+    # # Extract local coordinates
+    # x_local, y_local, z_local = head_local
     
-    # Apply rotation around the y-axis
-    x_rotated = cos_theta * x_local + sin_theta * z_local
-    y_rotated = y_local  # Y-coordinate remains the same
-    z_rotated = -sin_theta * x_local + cos_theta * z_local
+    # # Apply rotation around the y-axis
+    # x_rotated = cos_theta * x_local + sin_theta * z_local
+    # y_rotated = y_local  # Y-coordinate remains the same
+    # z_rotated = -sin_theta * x_local + cos_theta * z_local
     
-    # Translate by the object's global position
-    x_global = x_rotated + body_pos[0]
-    y_global = y_rotated + body_pos[1]
-    z_global = z_rotated + body_pos[2]
+    # # Translate by the object's global position
+    # x_global = x_rotated + body_pos[0]
+    # y_global = y_rotated + 0.02 # fixed y-loc
+    # z_global = z_rotated + body_pos[2]
     
+    # just use the simple addition
+    x_global = body_pos[0]
+    y_global = 1.695 + 0.02
+    z_global = body_pos[2]
+
     return [x_global, y_global, z_global]    
 
 def get_face_pos(trial_info):
@@ -231,80 +245,100 @@ def get_face_pos(trial_info):
         
         body_loc = [trial_info['PositionX'][i], trial_info['PositionY'][i], trial_info['PositionZ'][i]]
         body_rot =trial_info['RotationY'][i]
-        face_loc[cur_num][trial_info['FaceId'][i]]['location'] = convert_face_pos(body_loc, body_rot)
+        face_loc[cur_num][trial_info['FaceId'][i]]['location'] = [body_loc[0], 0.5, body_loc[2]]
     
     return face_loc
 
-def compute_ray_vector(player_location, player_yaw, object_location):
-    """
-    Computes the vector representing the ray cast from the player to the object,
-    in the player's local space, considering only rotation around the Y-axis.
 
-    Parameters:
-    - player_location: [x, y, z] coordinates of the player.
-    - player_yaw: Rotation angle around Y-axis in degrees.
-    - object_location: [x, y, z] coordinates of the object.
+def compute_ray_vector(player_position, player_yaw_degrees, object_position):
+    """
+    Compute the object ray in the player's local space, considering rotation around the y-axis.
+
+    Inputs:
+        - player_position: numpy array of shape (3,)
+        - player_yaw_degrees: float, player's rotation around the y-axis in degrees
+        - object_position: numpy array of shape (3,)
 
     Returns:
-    - ray_vector: The vector in player's local space pointing from the player to the object.
+        - object_ray: numpy array of shape (3,), normalized vector in player's local space
     """
+    # Compute the vector from the player to the object in world space
+    to_object_world = object_position - player_position  # Shape: (3,)
 
-    # Compute the direction vector from the player to the object in world space
-    dx = object_location[0] - player_location[0]
-    dy = object_location[1] - player_location[1]
-    dz = object_location[2] - player_location[2]
+    # Convert yaw angle to radians
+    yaw_radians = np.deg2rad(player_yaw_degrees)
 
-    # Convert yaw angle to radians and invert it for the coordinate transformation
-    yaw_rad = math.radians(-player_yaw)
+    # Compute the rotation matrix for the inverse rotation (rotate by -yaw)
+    cos_theta = np.cos(-yaw_radians)
+    sin_theta = np.sin(-yaw_radians)
 
-    # Calculate cosine and sine of the yaw angle
-    cos_yaw = math.cos(yaw_rad)
-    sin_yaw = math.sin(yaw_rad)
+    rotation_matrix = np.array([
+        [cos_theta, 0, sin_theta],
+        [0,         1, 0       ],
+        [-sin_theta,0, cos_theta]
+    ])
 
-    # Rotate the direction vector into the player's local space
-    x_local = cos_yaw * dx - sin_yaw * dz
-    y_local = dy  # Y-axis remains the same in this rotation
-    z_local = sin_yaw * dx + cos_yaw * dz
+    # Transform the vector into the player's local space
+    to_object_local = rotation_matrix @ to_object_world
 
-    ray_vector = [x_local, y_local, z_local]
+    # Normalize the vector to get the direction
+    object_ray = to_object_local / np.linalg.norm(to_object_local)
 
-    return ray_vector
+    return object_ray
 
-def compute_angle_between_vectors(v1, v2):
+def compute_angle_between_vectors(object_ray, eye_ray_input):
     """
-    Computes the angle in degrees between two 3D vectors.
+    Compute the angle between the object ray and eye movement ray.
 
-    Parameters:
-    - v1: First vector [x, y, z].
-    - v2: Second vector [x, y, z].
+    Inputs:
+        - object_ray: numpy array of shape (3,), normalized vector
+        - eye_ray_input: numpy array of shape (3,), where x and y are in [-1, 1], and z is depth
 
     Returns:
-    - angle_deg: The angle between the vectors in degrees.
+        - angle_in_degrees: float, the angle between the two rays in degrees
     """
-    # Compute the dot product of the two vectors
-    dot_product = sum(a * b for a, b in zip(v1, v2))
-    
-    # Compute the magnitudes of the vectors
-    magnitude_v1 = math.sqrt(sum(a * a for a in v1))
-    magnitude_v2 = math.sqrt(sum(b * b for b in v2))
-    
-    # Check for zero magnitude to avoid division by zero
-    if magnitude_v1 == 0 or magnitude_v2 == 0:
-        raise ValueError("Cannot compute angle with zero-length vector.")
-    
-    # Compute the cosine of the angle using the dot product formula
-    cos_theta = dot_product / (magnitude_v1 * magnitude_v2)
-    
-    # Clamp the cosine value to the valid range [-1, 1] to handle numerical errors
-    cos_theta = max(min(cos_theta, 1.0), -1.0)
-    
-    # Compute the angle in radians and then convert to degrees
-    angle_rad = math.acos(cos_theta)
-    angle_deg = math.degrees(angle_rad)
-    
-    return angle_deg
+    # Construct the eye ray vector and normalize it
+    eye_ray = eye_ray_input / np.linalg.norm(eye_ray_input)
 
-def eye_face_interaction(player_data, eye_data, face_loc, tolerance=10):
+    # Ensure the object ray is normalized
+    normalized_object_ray = object_ray / np.linalg.norm(object_ray)
+
+    # Calculate the dot product between the two rays
+    dot_product = np.dot(normalized_object_ray, eye_ray)
+
+    # Clamp the dot product to avoid numerical errors
+    dot_product = np.clip(dot_product, -1.0, 1.0)
+
+    # Calculate the angle in radians and then convert to degrees
+    angle_in_radians = np.arccos(dot_product)
+    angle_in_degrees = np.degrees(angle_in_radians)
+
+    return angle_in_degrees
+
+
+def occlusion_detection(player_pos, face_id, face_loc, wall_layout):
+    """Check if a wall blocks the view from the player to a specific object.
+
+    Inputs:
+        - player_pos: Tuple (x, y, z) representing the player's position.
+        - face_id: ID of the specific object.
+        - face_loc: Dictionary mapping face IDs to their positions (x, z).
+        - wall_layout: List of walls, each defined by two points [(x1, z1), (x2, z2)].
+    Returns:
+        - True if occlusion is detected, False otherwise.
+    """
+    player_point = (player_pos[0], player_pos[2])  # (x, z)
+    object_point = (face_loc[face_id]['location'][0], face_loc[face_id]['location'][2])  # (x, z)
+
+    for wall in wall_layout:
+        p2 = [wall['startPoint']['x'], wall['startPoint']['y']]
+        q2 = [wall['endPoint']['x'], wall['endPoint']['y']]
+        if do_intersect(player_point, object_point, p2, q2):
+            return True  # Occlusion detected
+
+    return False  # No occlusion
+
+def eye_face_interaction(player_data, eye_data, face_loc, tolerance=10, wall_layout=None):
     """ Compute the interaction between eye tracking data and different faces.
 
         Inputs:
@@ -313,14 +347,76 @@ def eye_face_interaction(player_data, eye_data, face_loc, tolerance=10):
             - face_loc: processed dictionary for the location/label of each face within the environment.
             - tolerance: consider looking at a face if the angle between eye and player-object rays is less
                         the tolerance.
+            - wall_layout: layout of the walls for polyface
 
         Return:
             - A dictionary storing the time (start and end time) when looking at different faces. 
     """
 
-    # TODO
-    pass
+    # iterate through all eye data to compute the interaction
+    recorded_interaction = dict()
 
+    for step in range(len(eye_data['SyncedTime'])):
+        eye_time = eye_data['SyncedTime'][step]
+        if math.sqrt(sum(a * a for a in eye_data['Convergence'][step])) == 0:
+            continue
+
+        # align the player data to the eye data
+        # this step is necessarily because player data is only recorded when the agent is moving
+        # while the eye data is recorded all the time
+        if eye_time < player_data['SyncedTime'][0]:
+            aligned_idx = 0 # agent starts moving after some delay
+        elif eye_time > player_data['SyncedTime'][-1]:
+            aligned_idx = -1 # agent stops moving at the end of the trial
+        else:
+            aligned_idx = find_closest(eye_time, player_data['SyncedTime'])
+
+        player_pos = player_data['Pos'][aligned_idx]
+        player_rot = player_data['Rot'][aligned_idx][1]
+
+        # iterate through all faces and compute their viewing angle
+        # select the one with minimal angle between eye/object rays
+        matched_face = []
+        dist_pool = [] 
+        for face in face_loc:
+            # ignore faces that are too far away (typically in another room)
+            dist = compute_distance(player_pos, face_loc[face]['location'])
+            # if dist > 8:
+            #     continue
+
+            face_ray = compute_ray_vector(player_pos, player_rot, 
+                                face_loc[face]['location'])
+            eye_ray = eye_data['Convergence'][step]
+            angle_between = compute_angle_between_vectors(face_ray, eye_ray)
+
+            # consider the agent looking at a face if 
+            # (1) if eye ray agrees with the ray cast from the player to the object
+            # (2) no occlusion is detected along the way 
+            if (angle_between < tolerance and 
+                not occlusion_detection(player_pos, face, face_loc, wall_layout)):
+                matched_face.append(face)
+                dist_pool.append(dist)
+        
+        if len(matched_face)>0:
+            matched_face = matched_face[np.argmin(dist_pool)]
+            if matched_face not in recorded_interaction:
+                recorded_interaction[matched_face] = []
+            recorded_interaction[matched_face].append(eye_data['SyncedTime'][step])
+
+    # group discrete time stamps into blocks
+    group_interaction = dict()
+    for face in recorded_interaction:
+        group_interaction[face] = []
+        prev_t = recorded_interaction[face][0]
+        start_t = recorded_interaction[face][0]
+        for cur_t in recorded_interaction[face]:
+            if cur_t - prev_t > 0.2: # allow 200ms maximal gaps (i.e., similar to off-tolerance in Passive)
+                group_interaction[face].append([start_t, prev_t])
+                start_t = cur_t
+            prev_t = cur_t
+        group_interaction[face].append([start_t, prev_t])
+    
+    return group_interaction
 
 def MatStruct2Dict(struct):
     """ Converting Matlab struct data into dictionary in Python.
@@ -361,7 +457,7 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
     processed_player['SyncedTime'] = player_data['T_']
 
     # load the ephys data
-    ephys_offset = 0.2 # for each trial, include data before and after the offset as baseline
+    ephys_offset = 0 # for each trial, include data before and after the offset as baseline
     ephys_data = loadmat(os.path.join(minos_dir, 
                         session_name+'.spiky.ephys.SpikeInfo.mat'), simplify_cells=True)['data']['Value']
     spike_data = [ephys_data['Spikes']['Value'][unit]['T_'] for unit in range(len(ephys_data['Spikes']['Value']))]
@@ -370,10 +466,9 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
     # merge the behavioral data and neural data
     # since the preprocessed files does not have timestamps for each phase, use SpikyPy instead
     for paradigm in trial_data:
+        # TODO: use the recorded data for syncing instead
         tmp_trial_data = MinosData(os.path.join(minos_dir, 'Minos', ' '.join(re.split(r'(?<!^)(?=[A-Z])', paradigm)), 
                                 'Trials.bin')).Values
-        
-        
         if paradigm in ['FiveDot', 'PassiveFixation']:
             tmp_trial_data = process_trial(tmp_trial_data, filtered_start='Start_Align', filtered_end='End')
             processed_trial[paradigm]['Eye'] = []
