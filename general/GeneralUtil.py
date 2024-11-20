@@ -1,8 +1,9 @@
 import numpy as np
 from matplotlib import pyplot as plt
+import matplotlib.patches as patches
 import os
 import json
-from PolyfaceUtil import get_room_loc
+from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction
 
 # predefine color for different rooms, corridor has white color
 room_color = {'circle': 'red', 'rectangle': 'aqua',
@@ -11,9 +12,9 @@ room_color = {'circle': 'red', 'rectangle': 'aqua',
               }
 
 
-def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', 
+def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', trial_info=None,
                 eye_interaction=False, spatial_overlay=False,
-                continuous_only=False):
+                continuous_only=False, tolerance=15, wall_layout=None):
     """ Visualizing the raster plot for a single trial. The
     plot is divided into different blocks based on a set of discrete events.
     It also supports using background color to incorporate eye interactions
@@ -22,10 +23,14 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf',
     Inputs:
         trial_data: preprocessed dictionary.
         paradigm: paradigm for visualization.
+        save_format: format for saving the visualization.
+        trial_info: trial info read by MinosData, for eye interaction.
         eye_interaction: adding eye interaction data or not.
         spatial_overlay: add spatial position as background color
         save_dir: directory for the saved visualization.
         continuous_only: only consider continuous trials (Polyface only).
+        tolerance: tolerance for matching eye ray and ray cast toward the object.
+        wall_layout: wall positions of the polyface environment.
     """
 
     if paradigm == 'PolyFaceNavigator':
@@ -41,6 +46,10 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf',
     
     for type_ in trial_type:
         os.makedirs(os.path.join(save_dir, type_), exist_ok=True)
+
+    if eye_interaction:
+        assert trial_info is not None, 'Eye interaction enabled but trial info not given'
+        face_loc = get_face_pos(trial_info)
 
     # one plot for each trial
     for trial_idx in range(len(trial_data['Paradigm'][paradigm]['Number'])):
@@ -67,21 +76,20 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf',
         # basic raster plot
         plt.close('all')
         fig = plt.figure()
-        # plt.xlim(-offset, trial_len+offset)
-        plt.ylim(0, len(trial_data['Neuron_type'])+10)
+        ax = plt.gca()
+        ax.set_ylim(0, len(trial_data['Neuron_type'])+10)
 
         for neuron in range(len(trial_data['Paradigm'][paradigm]['Spike'][trial_idx])):
             spike_time = [cur-trial_onset for cur in trial_data['Paradigm'][paradigm]['Spike'][trial_idx][neuron]]
-            plt.scatter(spike_time, [neuron+5]*len(spike_time), c='black', marker='.', s=0.2)
+            ax.scatter(spike_time, [neuron+5]*len(spike_time), c='black', marker='.', s=0.2)
         
         for event in discrete_events:
             if paradigm == 'PolyFaceNavigator' and event == 'End':
                 event = cur_type
-            plt.axvline(x = trial_data['Paradigm'][paradigm][event][trial_idx]-trial_onset, color = 'b', linewidth=2)
+            ax.axvline(x = trial_data['Paradigm'][paradigm][event][trial_idx]-trial_onset, color = 'gray', linewidth=2, alpha=1)
 
         # add spatial background
         if spatial_overlay:
-            ax = plt.gca()
             room_block = get_room_loc(trial_data['Paradigm'][paradigm]['Player'][trial_idx],
                                       trial_data['Paradigm'][paradigm]['Start'][trial_idx],
                                       trial_data['Paradigm'][paradigm][cur_type][trial_idx])
@@ -95,6 +103,19 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf',
                         block[0] = trial_data['Paradigm'][paradigm]['Off'][trial_idx]
 
                     ax.axvspan(block[0]-trial_onset, block[1]-trial_onset, facecolor=room_color[room], alpha=0.2)
+
+        # add eye-face interaction as stripes below the x-axis
+        if eye_interaction:
+            interaction_block = eye_face_interaction(trial_data['Paradigm'][paradigm]['Player'][trial_idx],
+                                                    trial_data['Paradigm'][paradigm]['Eye_arena'][trial_idx],
+                                                    face_loc[trial_number], tolerance=tolerance, wall_layout=wall_layout)
+            
+            for face in interaction_block:
+                color = 'red' if face_loc[trial_number][face]['isTarget'] else 'blue'
+                for block in interaction_block[face]:
+                    rect = patches.Rectangle((block[0]-trial_onset, 0), block[1]-block[0], 3, 
+                                                color=color, alpha=1)   
+                    ax.add_patch(rect)         
 
         # save the plot
         fig.set_size_inches(10, 10)
