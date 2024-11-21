@@ -1,13 +1,13 @@
 import numpy as np
 import math
-from MinosData import MinosData
+from minos.MinosData import MinosData
 from scipy.io import loadmat
 import os
 import json
 import re
 import time
 import pickle
-from MiscUtil import do_intersect
+from polyface.MiscUtil import do_intersect
 from matplotlib import pyplot as plt
 
 # room boundary of the polyface task
