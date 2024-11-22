@@ -1,10 +1,10 @@
 import numpy as np
 import re
-from MinosTypeInfo import TypeInfo
+from minos.MinosTypeInfo import TypeInfo
 from copy import deepcopy
 import os
 import struct
-from MinosUtil import str2int
+from minos.MinosUtil import str2int
 import mmap
 
 class MinosData():

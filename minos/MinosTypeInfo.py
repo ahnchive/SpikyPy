@@ -1,6 +1,6 @@
 import numpy as np
 import re
-from MinosUtil import ternary, str2int 
+from minos.MinosUtil import ternary, str2int 
 from copy import deepcopy
 
 class TypeInfoObj():
