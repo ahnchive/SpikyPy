@@ -444,17 +444,19 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
 
     # read preprocessed files for trial, eye tracking, and player
     trial_data = loadmat(os.path.join(tmp_dir, 'trial.mat'), simplify_cells=True)['trial']
-    eye_data = loadmat(os.path.join(tmp_dir, 'eye.mat'), simplify_cells=True)['eye']
-    player_data = loadmat(os.path.join(tmp_dir, 'player.mat'), simplify_cells=True)['player']
-
     # convert the struct data to dictionary
     processed_trial = dict()
     for paradigm in trial_data:
         processed_trial[paradigm] = MatStruct2Dict(trial_data[paradigm]['Data'])
+    eye_data = loadmat(os.path.join(tmp_dir, 'eye.mat'), simplify_cells=True)['eye']
     processed_eye = MatStruct2Dict(eye_data['Data'])
     processed_eye['SyncedTime'] = eye_data['T_']
-    processed_player = MatStruct2Dict(player_data['Data'])
-    processed_player['SyncedTime'] = player_data['T_']
+
+    # for polyface only
+    if os.path.exists(os.path.join(tmp_dir, 'player.mat')):
+        player_data = loadmat(os.path.join(tmp_dir, 'player.mat'), simplify_cells=True)['player']
+        processed_player = MatStruct2Dict(player_data['Data'])
+        processed_player['SyncedTime'] = player_data['T_']
 
     # load the ephys data
     ephys_offset = 0 # for each trial, include data before and after the offset as baseline
@@ -469,7 +471,7 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
         # TODO: use the recorded data for syncing instead
         tmp_trial_data = MinosData(os.path.join(minos_dir, 'Minos', ' '.join(re.split(r'(?<!^)(?=[A-Z])', paradigm)), 
                                 'Trials.bin')).Values
-        if paradigm in ['FiveDot', 'PassiveFixation']:
+        if paradigm != 'PolyFaceNavigator':
             tmp_trial_data = process_trial(tmp_trial_data, filtered_start='Start_Align', filtered_end='End')
             processed_trial[paradigm]['Eye'] = []
         else:   
@@ -484,7 +486,7 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
         prev_correct = False
         for idx in range(len(processed_trial[paradigm]['Number'])):
             trial_num = processed_trial[paradigm]['Number'][idx]
-            if paradigm in ['FiveDot', 'PassiveFixation']:
+            if paradigm != 'PolyFaceNavigator':
                 # align eye data
                 start_idx, end_idx = align_trial(trial_num, processed_eye, tmp_trial_data, 'Start_Align', 'End')
                 aligned_eye = {k: processed_eye[k][start_idx:end_idx] for k in processed_eye}
@@ -508,7 +510,7 @@ def MinosMatlabWrapper(minos_dir, tmp_dir):
                 processed_trial[paradigm]['Player'].append(aligned_player)
 
             # use the synced time from the preprocessed data for merging spike data
-            if paradigm in ['FiveDot', 'PassiveFixation']:
+            if paradigm != 'PolyFaceNavigator':
                 start_flag, end_flag = 'Start_Align', 'End'
             else:
                 start_flag = 'On'
