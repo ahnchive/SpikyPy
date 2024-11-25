@@ -54,7 +54,7 @@ def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', trial_info=No
     # one plot for each trial
     for trial_idx in range(len(trial_data['Paradigm'][paradigm]['Number'])):
         # temporarily remove bad data
-        if trial_idx == 217:
+        if trial_idx == 158:
             break
 
         # skip easy trials 

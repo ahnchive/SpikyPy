@@ -23,14 +23,14 @@ for k in face2id:
     id2face[face2id[k]] = k
 
 # preprocess the data for better structure
-trial_data = process_trial(trial_data)
+trial_data = process_trial(trial_data, filtered_start='Start', filtered_end='End')
 valid_face = get_valid_face(trial_info, id2face)
 trial2json = get_trial_json_mapping(trial_info)
 
 # looping through all trials and store the information for replay
 replay_data = {'player':[], 'trialId': [], 'validFace': [], 'eye':[], 'eyeCue': []}
 for trial_num in trial_data:
-    if trial_num!=1293:
+    if trial_num!=1499:
         continue
     json_idx = int(trial2json[trial_num])
     cur_face = valid_face[trial_num]
@@ -43,7 +43,7 @@ for trial_num in trial_data:
     tmp_cue_eye = {'EyeX': cue_eye_x, 'EyeY': cue_eye_y, 'EyeZ': cue_eye_z}
 
     # align the eye data for navigation phase
-    start_idx, end_idx = align_trial(trial_num, eye_data, trial_data, 'Start', 'End_Correct')
+    start_idx, end_idx = align_trial(trial_num, eye_data, trial_data, 'Start', 'End')
     eye_x = [float(eye_data['ConvergenceX'][idx]) for idx in range(start_idx, end_idx+1)]
     eye_y = [float(eye_data['ConvergenceY'][idx]) for idx in range(start_idx, end_idx+1)]
     eye_z = [float(eye_data['ConvergenceZ'][idx]) for idx in range(start_idx, end_idx+1)]
@@ -54,7 +54,7 @@ for trial_num in trial_data:
     # one tricky thing is that navigation data is only being recorded when the agent is moving
     # thus, interpolation/alignment to the eye data is needed
     # raw player data without interpolation
-    start_idx, end_idx = align_trial(trial_num, player_data, trial_data, 'Start', 'End_Correct')
+    start_idx, end_idx = align_trial(trial_num, player_data, trial_data, 'Start', 'End')
     player_x = [float(player_data['PosX'][idx]) for idx in range(start_idx, end_idx+1)]
     player_y = [float(0.5) for idx in range(start_idx, end_idx+1)]
     player_z = [float(player_data['PosZ'][idx]) for idx in range(start_idx, end_idx+1)]
