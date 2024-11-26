@@ -92,9 +92,9 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
                 start_idx, end_idx = align_trial(trial_num, processed_eye, tmp_trial_data, 'Start_Align', 'End')
 
                 if eye_offset:
-                    adjusted_start_time = processed_eye['Synced_time'][start_idx]-ephys_offset_before
+                    adjusted_start_time = processed_eye['SyncedTime'][start_idx]-ephys_offset_before
                     start_idx = find_closest(adjusted_start_time, processed_eye['SyncedTime'])
-                    adjusted_end_time = processed_eye['Synced_time'][start_idx]+ephys_offset_after
+                    adjusted_end_time = processed_eye['SyncedTime'][start_idx]+ephys_offset_after
                     end_idx = find_closest(adjusted_end_time, processed_eye['SyncedTime'])
 
                 aligned_eye = {k: processed_eye[k][start_idx:end_idx] for k in processed_eye}
