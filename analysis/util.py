@@ -49,6 +49,20 @@ def compute_population_response(spike_time, start, end):
     
     return avg_firing
 
+def normalize_response(stim_firing_rate, baseline_firing_rate):
+    """ Normalize categorical responses for each neuron. The normalization process
+        follows the lab convention.
+
+        Inputs:
+            - stim_firing_rate: firing rate for each unique stimulus/setting, 
+                        assuming a NxC numpy array, where N/C corresponds to
+                        neuron/stimulus.
+            - baseline_firing_rate: baseline firing rate following the same convention.
+    """
+    norm_response = stim_firing_rate-baseline_firing_rate.mean(-1, keepdims=True)
+
+    return (norm_response-norm_response.min(-1, keepdims=True))/(norm_response.max(-1, keepdims=True)-norm_response.min(-1, keepdims=True))
+
 def check_eye_interaction(eye_interaction, period):
     """ Function for checking if the monkey is looking at any face during
         the given period.
