@@ -6,7 +6,7 @@ import re
 import json
 from minos.MinosData import MinosData
 from scipy.io import loadmat
-from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, process_trial, align_trial
+from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, process_trial, align_trial, find_closest
 
 # predefine color for different rooms, corridor has white color
 room_color = {'circle': 'red', 'rectangle': 'aqua',
@@ -30,7 +30,7 @@ def MatStruct2Dict(struct):
 
     return processed_dict
 
-def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset=0):
+def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_after=0, eye_offset=False):
     """ A temporarily super-script for reading Minos data
     from temporary Matlab files, and merging them into one dictionary.
 
@@ -39,7 +39,8 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset=0):
         tmp_dir: Directory storing temporary files, i.e., 
                 some raw files can not be directly loaded by Python and require
                 manual conversion with Matlab.
-        ephys_offset: include offset before and after each trial as baseline
+        ephys_offset_before/after: include offset before and after each trial as baseline
+        eye_offset: temporary option to also save the eye data for offset periods.
     """
     session_name = os.path.basename(tmp_dir)
 
@@ -89,9 +90,15 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset=0):
             if paradigm != 'PolyFaceNavigator':
                 # align eye data
                 start_idx, end_idx = align_trial(trial_num, processed_eye, tmp_trial_data, 'Start_Align', 'End')
+
+                if eye_offset:
+                    adjusted_start_time = processed_eye['Synced_time'][start_idx]-ephys_offset_before
+                    start_idx = find_closest(adjusted_start_time, processed_eye['SyncedTime'])
+                    adjusted_end_time = processed_eye['Synced_time'][start_idx]+ephys_offset_after
+                    end_idx = find_closest(adjusted_end_time, processed_eye['SyncedTime'])
+
                 aligned_eye = {k: processed_eye[k][start_idx:end_idx] for k in processed_eye}
                 processed_trial[paradigm]['Eye'].append(aligned_eye)
-
             else:
                 # align eye data during cue phase
                 start_idx, end_idx = align_trial(trial_num, processed_eye, tmp_trial_data, 'On', 'Off')
@@ -128,8 +135,8 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset=0):
                 prev_correct = True if end_flag == 'End_Correct' else False
 
             start_time, end_time = processed_trial[paradigm][start_flag][idx], processed_trial[paradigm][end_flag][idx]
-            start_time -= ephys_offset
-            end_time += ephys_offset
+            start_time -= ephys_offset_before
+            end_time += ephys_offset_after
             trial_spike = cropped_spike_period(spike_data, start_time, end_time)
             processed_trial[paradigm]['Spike'].append(trial_spike)
         
