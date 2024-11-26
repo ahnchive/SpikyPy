@@ -1,6 +1,7 @@
 import numpy as np
 from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction
 from matplotlib import pyplot as plt
+from scipy.signal import savgol_filter
 import os
 from analysis.util import moving_average, compute_population_response, check_eye_interaction
 from analysis.decoding import kfold_cross_validation
@@ -378,9 +379,7 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
 
 def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
                         baseline_buffer=0.2, cell_type='rEC', 
-                        classifier='logistic', k_fold=5, save_path=None, 
-                        subset=None, force_balanced=False, filter_onset=False,
-                        reg_para=1):
+                        classifier='logistic', k_fold=5, save_path=None, subset=None):
     """ Analysis regarding the temporal decoding of spatial locations (e.g.,
         different rooms and corridor. The decoding is based on population responses,
         and assumes linear classifiers). The results are based on a K-fold evaluation.
@@ -394,9 +393,6 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
             - k_fold: number of folds for k-fold validation.
             - save_path: path for saving the results.
             - subset: if not None, only consider samples from the subset.
-            - force_balanced: if yes, sample a balanced subset for experiment.
-            - filter_onset: filter periods right after stim onset.
-            - reg_para: regularization parameter for the classifier.
     """
 
     # get the index of selected cells
@@ -436,11 +432,7 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
 
         
         for room in room_block:
-            if room == 'corridor':
-                continue
             for block in room_block[room]:
-                if filter_onset and block[0]-baseline_buffer<=trial_onset:
-                    continue
                 # filter the cue phase
                 if block[1] <= trial_onset:
                     continue
@@ -470,11 +462,6 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
 
     # perform k-fold evaluation with the collected data
     print('Number of samples %d' %len(temporal_population_label))
-    class_count = dict()
-    for k in np.unique(temporal_population_label):
-        class_count[k] = np.count_nonzero(np.array(temporal_population_label)==k)
-        print('Percentage of samples for %s: %.2f' 
-              %(k, class_count[k]/len(temporal_population_label)))
     
     # convert labels to indices
     label_mapping = dict()
@@ -484,19 +471,6 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
         temporal_population_label[i] = label_mapping[temporal_population_label[i]]
     temporal_population_label = np.array(temporal_population_label)
     random_guess = 1/len(label_mapping)
-
-    # sample a balanced subset
-    if force_balanced:
-        min_num_sample = np.min(list(class_count.values()))
-        sample_idx = []
-        for room in class_count:
-            cur_class_idx = np.where(temporal_population_label==label_mapping[room])[0]
-            sample_idx.extend(list(np.random.choice(cur_class_idx, min_num_sample, replace=False)))
-        sample_idx = np.array(sample_idx)
-        np.random.shuffle(sample_idx)
-        temporal_population_label = temporal_population_label[sample_idx]
-        for t in temporal_population_response:
-            temporal_population_response[t] = [temporal_population_response[t][cur] for cur in sample_idx]
 
     # perform the k-fold cross-validation for each temporal bin
     # overall decoding performance
@@ -519,13 +493,13 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
     for t in temporal_population_response:
         result[t] = kfold_cross_validation(temporal_population_response[t], 
                                      temporal_population_label,
-                                     k_fold, classifier, reg_para)
+                                     k_fold, classifier)
         
         for room in label_mapping:
             tmp_data = [temporal_population_response[t][idx] for idx in room_idx_data[room]]
             result_by_room[room][t] = kfold_cross_validation(tmp_data, 
                                      room_label[room],
-                                     k_fold, classifier, reg_para)
+                                     k_fold, classifier)
             
 
     # plot the figure for the decoding results
