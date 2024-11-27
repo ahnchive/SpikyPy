@@ -120,11 +120,25 @@ def get_stimulus_mapping(trial_info, id2stim):
 
     return trial2stim    
 
+def CorrectMinosEye(eye_data):
+    """ Correct the convergence value of Minos eye data 
+        if either of the eye gaze is nan.
+    """
+    for i in range(len(eye_data['Convergence'])):
+        if any(np.isnan(eye_data['LeftGaze'][i])) or any(np.isnan(eye_data['RightGaze'][i])):
+            eye_data['Convergence'][i] = np.array([np.nan]*3)
+        
+    return eye_data
+
 def MinosEyeConversion(eye_x, eye_y, eye_z, stim_size):
     projected_x, projected_y = [], []
     for i in range(len(eye_x)):
-        projected_x.append(eye_x[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5*(9/16)+0.5)
-        projected_y.append(eye_y[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5+0.5)
+        if any([np.isnan(cur) for cur in [eye_x[i], eye_y[i], eye_z[i]]]):
+            projected_x.append(-1)
+            projected_y.append(-1)
+        else:
+            projected_x.append(eye_x[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5*(9/16)+0.5)
+            projected_y.append(eye_y[i]/(eye_z[i]+1e-7)/tand(stim_size/2)*0.5+0.5)
     return projected_x, projected_y
 
 def check_corridor(x, z):
@@ -185,6 +199,31 @@ def get_room_loc(player_data, trial_start, trial_end):
     room_block[cur_room].append([prev_start, trial_end])
 
     return room_block
+
+def find_transition(room_block):
+    """ Auxiliary function for converting room into room transition.
+    """
+    transition_block = dict()
+    all_block = []
+    for room in room_block:
+        for block in room_block[room]:
+            transition_block[tuple(block)] = room
+            all_block.append(block)
+    all_block.sort(key=lambda x: x[0])
+    prev_room = transition_block[tuple(all_block[0])]
+    converted_block = dict()
+    for i in range(1, len(all_block)):
+        cur_room = transition_block[tuple(all_block[i])]
+        if cur_room == 'corridor':
+            continue
+        if cur_room != prev_room:
+            cur_transition = prev_room + '_' + cur_room
+            if cur_transition not in converted_block:
+                converted_block[cur_transition] = []
+            converted_block[cur_transition].append(all_block[i])
+        
+        prev_room = cur_room
+    return converted_block
 
 def convert_face_pos(body_pos, body_rot):
     """ Convert the face location given the recorded body location.
