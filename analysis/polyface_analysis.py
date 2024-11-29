@@ -1,13 +1,24 @@
 import numpy as np
-from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction
+from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, find_transition, find_closest
+from polyface.PolyfaceUtil import map_coordinates, compute_spatial_frequency, compute_reward_frequency, compute_face_map
 from matplotlib import pyplot as plt
 import os
 from analysis.util import moving_average, compute_population_response, check_eye_interaction
 from analysis.decoding import kfold_cross_validation
+from scipy.ndimage import gaussian_filter
+from scipy.stats import spearmanr
 
 room_color = {'circle': 'red', 'rectangle': 'aqua',
-              'diamond': 'green', 'triangle': 'yellow',
-              'corridor': 'purple'
+              'diamond': 'green', 'triangle': 'goldenrod',
+              'corridor': 'purple', 
+              'circle_rectangle': 'red',
+              'circle_diamond': 'aqua',
+              'rectangle_circle': 'green',
+              'diamond_circle': 'goldenrod',
+              'rectangle_diamond': 'purple',
+              'diamond_rectangle': 'blue',
+              'diamond_triangle': 'dodgerblue',
+              'triangle_diamond': 'slategrey'
               }
 
 def PSTH_by_face_polyface(trial_data, trial_info, wall_layout, 
@@ -231,7 +242,8 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
 def PSTH_by_room_polyface(trial_data, trial_info, wall_layout, 
                           tolerance=8, stim_time=0.45, bin_size=0.02,
                           baseline_buffer=0.15, num_smooth=3, cell_type='rEC', 
-                          save_path=None, subset=None, filter_eye=False, filter_onset=False):
+                          save_path=None, subset=None, filter_eye=False, filter_onset=False,
+                          plot_transistion=False, sort_selectivity=False):
     """ Compute the PSTH for the onset of different events, i.e., entering a specific room/corridor. 
         It only considers the spike firing rates for the first
         bin after onset. Events shorter than the specified bin size will be dropped by default.
@@ -251,6 +263,9 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
             - subset: If not None, only compute the stat based on the given subset of trial number.
             - filter_eye: If yes, only consider the period where the monkey is not looking at a face.
             - filter_onset: If yes, filter out the periods when the monkey enter the room right after stim onset.
+            - plot_transistion: If yes, plot the PSTH based on room transition (instead of just the room).
+            - sort_selectivity: If yes, compute the selectivity of each neuron and sort them based on the strength 
+                            of selectivity. The visualization will be save in separate folders for different room.
     """
     os.makedirs(save_path, exist_ok=True)
 
@@ -262,7 +277,10 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
     face_loc = get_face_pos(trial_info)
     
     # psth averaged over the whole stim onset
-    psth = {k: [[] for _ in range(len(cell_idx))] for k in room_color}
+    if not plot_transistion:
+        psth = {k: [[] for _ in range(len(cell_idx))] for k in room_color if not '_' in k}
+    else:
+        psth = {k: [[] for _ in range(len(cell_idx))] for k in room_color if '_' in k}
 
     # iterate through all trials
     for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
@@ -287,12 +305,18 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
         room_block = get_room_loc(trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx],
                                     trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx],
                                     trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx])
+        
+        if plot_transistion:
+            room_block = find_transition(room_block)
+            if len(room_block) == 0:
+                continue
 
         # obtain eye interaction periods
         if filter_eye:
             interaction_block = eye_face_interaction(trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx],
                                                     trial_data['Paradigm']['PolyFaceNavigator']['Eye_arena'][trial_idx],
                                                     face_loc[trial_number], tolerance=tolerance, wall_layout=wall_layout)
+
 
         for neuron_idx, neuron in enumerate(cell_idx):
             neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
@@ -357,23 +381,55 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
                     bbox_inches='tight')    
         
     
-    # TODO: add function for sorting based on room selectivity
+    # sorting neurons based on room selectivity
+    if sort_selectivity:
+        # compute the selectivity modulation value for each neuron
+        all_room = list(avg_psth.keys())
+        modulation_value = np.zeros([len(cell_idx), len(all_room)])
+        for i in range(len(cell_idx)):
+            for j in range(len(all_room)):
+                modulation_value[i, j] = np.mean(avg_psth[all_room[j]][i])
+        
+        room_selectivity = dict()
+        for i in range(len(cell_idx)):
+            room_selectivity[i] = dict()
+            selected_idx = np.argmax(modulation_value[i])
+            non_selected_val = np.mean([modulation_value[i, k] for k in range(len(all_room)) if k!=selected_idx])
+            room_selectivity[i]['room'] = all_room[selected_idx]
+            room_selectivity[i]['modulation_val'] = (np.max(modulation_value[i])-non_selected_val)/(np.max(modulation_value[i])+non_selected_val)
+
+        # sort the neurons selected for each room
+        for room in all_room:
+            cur_neuron_pool = [idx for idx in range(len(cell_idx)) if room_selectivity[idx]['room']==room]
+            cur_modulation_val = [room_selectivity[idx]['modulation_val'] for idx in cur_neuron_pool]
+            sort_idx = np.argsort(cur_modulation_val)[::-1]
+            for i in range(len(sort_idx)):
+                room_selectivity[cur_neuron_pool[sort_idx[i]]]['sort_idx'] = i
+
 
     # plot the fine PSTH by neuron
-    for neuron_idx in range(len(psth['corridor'])):
+    for neuron_idx in range(len(cell_idx)):
         plt.close('all')
         fig = plt.figure()
         for room in avg_psth:
             plt.plot(np.arange(len(avg_psth[room][neuron_idx])), avg_psth[room][neuron_idx], 
                             color=room_color[room], label=room)
 
-            plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
-            plt.ylabel('Firing Rating')
-            plt.xlabel('Time')
-            plt.xticks(x_tick, tick_label)  # Custom labels
-            plt.legend()
+        plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
+        plt.ylabel('Firing Rating')
+        plt.xlabel('Time')
+        plt.xticks(x_tick, tick_label)  # Custom labels
+        plt.legend()
+        if not sort_selectivity:
             fig.savefig(os.path.join(save_path, str(neuron_idx+1)+'.png'), 
                         bbox_inches='tight')
+        else:
+            selected_room = room_selectivity[neuron_idx]['room']
+            sort_idx = room_selectivity[neuron_idx]['sort_idx']
+            if not os.path.exists(os.path.join(save_path, selected_room)):
+                os.makedirs(os.path.join(save_path, selected_room), exist_ok=True)
+            fig.savefig(os.path.join(save_path, selected_room, str(sort_idx+1)+'_'+str(neuron_idx+1)+'.png'), 
+                        bbox_inches='tight')            
             
 
 def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
@@ -558,3 +614,115 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
     axs[1].legend()
 
     fig.savefig(save_path, bbox_inches='tight')
+
+
+def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rEC', 
+                          save_path=None, subset=None):
+    """ Visualizing the place field for each neuron as a heatmap.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - trial_info: trial info read by MinosData.
+            - wall_layout: wall positions of the polyface environment.
+            - cell_type: types of cells for computation.
+            - save_path: directory for saving the visualization.
+            - subset: if not None, only consider trial numbers in the subset.
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]    
+    
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+
+    # for heatmap visualization
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+    array_size = 1008
+
+    # compute the spatial and reward frequency of different locations for normalization later
+    spatial_frequency = compute_spatial_frequency(trial_data, wall_layout, array_size, subset)
+    reward_frequency = compute_reward_frequency(trial_data, wall_layout, array_size, subset)
+    face_map = compute_face_map(trial_info, wall_layout, array_size, subset)
+    
+    # initialize the place field for different neurons
+    place_fields = np.zeros([len(cell_idx), array_size, array_size])
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue    
+
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx]
+        player_data = trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx]
+
+        for neuron_idx, neuron in enumerate(cell_idx):
+            neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
+
+            # find the location for each spike
+            for spike in neuron_spikes:
+                if spike<=trial_onset:
+                    continue
+
+                loc_idx = find_closest(spike, player_data['SyncedTime'])
+                x, y = player_data['Pos'][loc_idx][0], player_data['Pos'][loc_idx][2] # actually x-z in Unity
+                x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+                place_fields[neuron_idx, y_mapped, x_mapped] += 1
+
+
+    # generate the heatmaps
+    extent = [x_min, x_max, y_min, y_max]
+    for neuron_idx, neuron in enumerate(cell_idx):
+        plt.close('all')
+        fig, ax = plt.subplots()
+        # plot the walls
+        for wall in wall_layout:
+            x = [wall['startPoint']['x'], wall['endPoint']['x']]
+            y = [wall['startPoint']['y'], wall['endPoint']['y']]
+            plt.plot(x, y, c='black')
+        plt.axis('off')
+        fig.set_size_inches(8, 8)
+
+        # normalization (with reward and spatial frequency) and Gaussian blurring
+        cur_place_field = place_fields[neuron_idx]
+        normalized_place_field = cur_place_field/reward_frequency/(spatial_frequency+1e-7)
+        normalized_place_field /= normalized_place_field.max()
+        normalized_place_field = gaussian_filter(normalized_place_field, sigma=15)
+        im = ax.imshow(normalized_place_field, origin='lower', cmap='viridis', extent=extent, alpha=0.6, interpolation='nearest')
+        colormap = plt.cm.viridis
+        colormap.set_under(color='white', alpha=0)
+        fig.savefig(os.path.join(save_path, str(neuron)+'.png'), bbox_inches='tight')
+
+    # compute the average correlation between place field and reward/face maps
+    avg_reward_corr = []
+    avg_face_corr = []
+    face_map /= face_map.max()
+    face_map = gaussian_filter(face_map, sigma=15)
+    reward_frequency -= 1
+    reward_frequency /= reward_frequency.max()
+    reward_frequency = gaussian_filter(reward_frequency, sigma=15)
+
+    for neuron_idx, neuron in enumerate(cell_idx):
+        cur_place_field = place_fields[neuron_idx]/(spatial_frequency+1e-7)
+        cur_place_field /= cur_place_field.max()
+        cur_place_field = gaussian_filter(cur_place_field, sigma=15)
+        avg_reward_corr.append(np.corrcoef(cur_place_field.reshape(-1), reward_frequency.reshape(-1))[0, 1])
+        avg_face_corr.append(np.corrcoef(cur_place_field.reshape(-1), face_map.reshape(-1))[0, 1])
+
+    print('Average/Max correlation with reward map: %.3f/%.3f' %(np.mean(avg_reward_corr), np.max(avg_reward_corr)))
+    print('Average/Max correlation with face map: %.3f/%.3f' %(np.mean(avg_face_corr), np.max(avg_face_corr)))
+
+    return reward_frequency, face_map

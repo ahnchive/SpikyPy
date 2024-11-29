@@ -281,7 +281,6 @@ def get_face_pos(trial_info):
     
     return face_loc
 
-
 def compute_ray_vector(player_position, player_yaw_degrees, object_position):
     """
     Compute the object ray in the player's local space, considering rotation around the y-axis.
@@ -448,6 +447,157 @@ def eye_face_interaction(player_data, eye_data, face_loc, tolerance=10, wall_lay
     
     return group_interaction
 
+# Function to map the original coordinates to the new array coordinates (for visualization)
+def map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size):
+    x_scaled = (x - x_min) / (x_max - x_min) * (array_size - 1)
+    y_scaled = (y - y_min) / (y_max - y_min) * (array_size - 1)
+    return int(x_scaled), int(y_scaled)    
 
+def compute_spatial_frequency(trial_data, wall_layout, array_size=1008, subset=None):
+    """ Compute the frequency of visiting different location. The result are
+        remapped onto an array consistent for other downstream analysis.
 
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - wall_layout: wall positions of the polyface environment.
+            - array_size: size for visualiztaion for downstream analysis.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+    
+        Return:
+            An array storing the frequency of visiting different location.
+    """
 
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+
+    # initialize the frequency array
+    spatial_frequency = np.zeros([array_size, array_size])
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue    
+
+        # use eye data as anchor to compute the frequency
+        # this is because player data is only recorded when the agent is moving
+        eye_time = trial_data['Paradigm']['PolyFaceNavigator']['Eye_arena'][trial_idx]['SyncedTime']
+        cur_player_data = trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx]
+        aligned_player_loc = [cur_player_data['Pos'][
+                            find_closest(eye_time[cur], cur_player_data['SyncedTime'])] 
+                            for cur in range(len(eye_time))]
+        
+        for i in range(len(aligned_player_loc)):
+            x, y, = aligned_player_loc[i][0], aligned_player_loc[i][2]
+            x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+            spatial_frequency[y_mapped, x_mapped] += 1
+
+    spatial_frequency /= spatial_frequency.max()
+    
+    return spatial_frequency
+
+def compute_reward_frequency(trial_data, wall_layout, array_size=1008, subset=None):
+    """ Compute the frequency of reward at different locations. The result are
+        remapped onto an array consistent for other downstream analysis.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - wall_layout: wall positions of the polyface environment.
+            - array_size: size for visualiztaion for downstream analysis.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+    
+        Return:
+            An array storing the unnormalized frequency of rewards at different location.
+    """
+
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+
+    # initialize the frequency array
+    reward_frequency = np.ones([array_size, array_size])
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue    
+
+        # account for the locations with reward
+        reward_time = trial_data['Paradigm']['PolyFaceNavigator']['Reward'][trial_idx]
+        if len(reward_time) == 0:
+            continue
+
+        cur_player_data = trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx]
+        aligned_player_loc = [cur_player_data['Pos'][
+                            find_closest(reward_time[cur], cur_player_data['SyncedTime'])] 
+                            for cur in range(len(reward_time))]
+        
+        for i in range(len(aligned_player_loc)):
+            x, y, = aligned_player_loc[i][0], aligned_player_loc[i][2]
+            x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+            reward_frequency[y_mapped, x_mapped] += 1
+    
+    return reward_frequency
+
+def compute_face_map(trial_info, wall_layout, array_size=1008, subset=None):
+    """ Compute a heatmap based on the locations of faces.
+
+        Inputs:
+            - trial_info: trial info read by MinosData.
+            - wall_layout: wall positions of the polyface environment.
+            - array_size: size for visualiztaion for downstream analysis.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+    
+        Return:
+            An array storing the unnormalized frequency of faces at different location.
+    """
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+
+    # initialize the frequency array
+    face_map = np.zeros([array_size, array_size])
+
+    # get the face locations for all trial
+    face_loc = get_face_pos(trial_info)
+
+    for trial_num in face_loc:
+        # temporarily remove bad data
+        if trial_num == 1443:
+            break
+        for face in face_loc[trial_num]:
+            x, _, y = face_loc[trial_num][face]['location']
+            x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+            face_map[y_mapped, x_mapped] += 1
+
+    return face_map
