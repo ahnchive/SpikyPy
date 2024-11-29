@@ -59,6 +59,11 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
         player_data = loadmat(os.path.join(tmp_dir, 'player.mat'), simplify_cells=True)['player']
         processed_player = MatStruct2Dict(player_data['Data'])
         processed_player['SyncedTime'] = player_data['T_']
+    
+    if os.path.exists(os.path.join(tmp_dir, 'reward.mat')):
+        reward_data = loadmat(os.path.join(tmp_dir, 'reward.mat'), simplify_cells=True)['reward']
+        processed_reward = MatStruct2Dict(reward_data['Data'])
+        processed_reward['SyncedTime'] = reward_data['T_']
 
     # load the ephys data
     ephys_data = loadmat(os.path.join(minos_dir, 
@@ -81,7 +86,8 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
             processed_trial[paradigm]['Eye_cue'] = []
             processed_trial[paradigm]['Eye_arena'] = []
             processed_trial[paradigm]['isContinuous'] = []
-        
+            processed_trial[paradigm]['Reward'] = []
+
         processed_trial[paradigm]['Spike'] = []
 
         prev_correct = False
@@ -112,9 +118,14 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
                 start_idx, end_idx = align_trial(trial_num, processed_player, tmp_trial_data, 'Start', 'End')
                 aligned_player = {k: processed_player[k][start_idx:end_idx] for k in processed_player}
 
+                # align reward
+                start_time, end_time = aligned_eye_arena['SyncedTime'][0], aligned_eye_arena['SyncedTime'][-1]
+                aligned_reward = [cur for cur in processed_reward['SyncedTime'] if cur >=start_time and cur<=end_time]
+
                 processed_trial[paradigm]['Eye_cue'].append(aligned_eye_cue)
                 processed_trial[paradigm]['Eye_arena'].append(aligned_eye_arena)
                 processed_trial[paradigm]['Player'].append(aligned_player)
+                processed_trial[paradigm]['Reward'].append(aligned_reward)
 
             # use the synced time from the preprocessed data for merging spike data
             if paradigm != 'PolyFaceNavigator':
