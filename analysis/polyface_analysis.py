@@ -1,5 +1,5 @@
 import numpy as np
-from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, find_transition, find_closest
+from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, find_transition, find_closest, find_passage
 from polyface.PolyfaceUtil import map_coordinates, compute_spatial_frequency, compute_reward_frequency, compute_face_map
 from matplotlib import pyplot as plt
 import os
@@ -7,6 +7,8 @@ from analysis.util import moving_average, compute_population_response, check_eye
 from analysis.decoding import kfold_cross_validation
 from scipy.ndimage import gaussian_filter
 from scipy.stats import spearmanr
+from matplotlib.patches import Circle
+import cv2
 
 room_color = {'circle': 'red', 'rectangle': 'aqua',
               'diamond': 'green', 'triangle': 'goldenrod',
@@ -617,7 +619,7 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
 
 
 def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rEC', 
-                          save_path=None, subset=None):
+                          save_path=None, subset=None, pf_size=10):
     """ Visualizing the place field for each neuron as a heatmap.
 
         Inputs:
@@ -627,8 +629,9 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
             - cell_type: types of cells for computation.
             - save_path: directory for saving the visualization.
             - subset: if not None, only consider trial numbers in the subset.
+            - pf_size: size of place field for computing the passage, size in pixel.
     """
-    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(os.path.join(save_path, 'heatmap'), exist_ok=True)
 
     # get the index of selected cells
     cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
@@ -685,6 +688,7 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
 
     # generate the heatmaps
     extent = [x_min, x_max, y_min, y_max]
+    final_place_field = []
     for neuron_idx, neuron in enumerate(cell_idx):
         plt.close('all')
         fig, ax = plt.subplots()
@@ -701,10 +705,20 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
         normalized_place_field = cur_place_field/reward_frequency/(spatial_frequency+1e-7)
         normalized_place_field /= normalized_place_field.max()
         normalized_place_field = gaussian_filter(normalized_place_field, sigma=15)
+        final_place_field.append(normalized_place_field)
+
+        # draw a circle to highlight the place field of the given size
+        pf_y_idx, pf_x_idx = np.unravel_index(normalized_place_field.argmax(), normalized_place_field.shape)
+        overlay = np.zeros((array_size, array_size, 4), dtype=np.uint8)  # RGBA overlay
+        cv2.circle(overlay, (pf_x_idx, pf_y_idx), pf_size, (255, 0, 0, 255), 2)  # Red circle with full opacity
+
         im = ax.imshow(normalized_place_field, origin='lower', cmap='viridis', extent=extent, alpha=0.6, interpolation='nearest')
+        ax.imshow(overlay, origin='lower', extent=extent, interpolation='nearest')
+
         colormap = plt.cm.viridis
         colormap.set_under(color='white', alpha=0)
-        fig.savefig(os.path.join(save_path, str(neuron)+'.png'), bbox_inches='tight')
+
+        fig.savefig(os.path.join(save_path, 'heatmap', str(neuron)+'.png'), bbox_inches='tight')
 
     # compute the average correlation between place field and reward/face maps
     avg_reward_corr = []
@@ -725,4 +739,144 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
     print('Average/Max correlation with reward map: %.3f/%.3f' %(np.mean(avg_reward_corr), np.max(avg_reward_corr)))
     print('Average/Max correlation with face map: %.3f/%.3f' %(np.mean(avg_face_corr), np.max(avg_face_corr)))
 
-    return reward_frequency, face_map
+    # return the place field of each neuron
+    record_place_field = []
+    for neuron_idx in range(len(final_place_field)):
+        cur_place_field = final_place_field[neuron_idx]
+        y, x = np.unravel_index(cur_place_field.argmax(), cur_place_field.shape)
+        record_place_field.append([x, y])
+    
+    return record_place_field
+
+def place_field_psth(trial_data, place_field, wall_layout, cell_type='rEC',
+                     stim_time=0.45, bin_size=0.02, baseline_buffer=0.15, num_smooth=3, 
+                     save_path=None, subset=None, pf_size=8):
+    """ Compute the PSTH and raster for place field passage.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - place_field: precomputed location of place field for each neuron.
+            - wall_layout: wall positions of the polyface environment.
+            - cell_type: types of cells for computation.
+            - stim_time: time after the stimulus onset to compute the PSTH.
+            - bin_size: bin size (in second) to compute the fine-grained PSTH.
+            - num_smooth: number of historical bins for smoothing.
+            - baseline_buffer: K ms before event onset as baseline.
+            - save_path: directory for saving the visualization.
+            - subset: if not None, only consider trial numbers in the subset.
+            - pf_size: size of place field for computing the passage, size in pixel.
+    """
+    os.makedirs(os.path.join(save_path, 'psth'), exist_ok=True)
+    os.makedirs(os.path.join(save_path, 'raster'), exist_ok=True)
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]    
+    
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+
+    # for heatmap visualization
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+    array_size = 1008
+
+    psth = [[] for _ in range(len(cell_idx))]
+    raster = [[] for _ in range(len(cell_idx))] 
+
+    # iterate through all trials and gather the spike data during passage
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue    
+
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx]
+        player_data = trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx]
+
+        for neuron_idx, neuron in enumerate(cell_idx):
+            # check if the current trial pass through the place field
+            passage_block = find_passage(player_data, place_field[neuron_idx], pf_size,
+                                             x_min, x_max, y_min, y_max, array_size) 
+            
+            if len(passage_block) == 0:
+                continue
+            
+            neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
+            
+            for passage in passage_block:
+                # each passage is organized as:
+                # start time for entering the "big place field"
+                # end time for leaving the "big place field"
+                # time closest to the center of the place field
+                event_onset = passage[-1]
+                event_offset = passage[-1] + stim_time
+                # ignore events that are too close to cue phase
+                if event_onset-trial_onset <= (stim_time+baseline_buffer): 
+                    continue
+
+                # raster for the current passage
+                spike = [(spike_time-event_onset)*1000 for spike_time in neuron_spikes 
+                        if spike_time>=event_onset-baseline_buffer and spike_time<=event_offset]
+                raster[neuron_idx].append(spike)
+
+                # compute the psth
+                num_bin = int((stim_time+baseline_buffer)/bin_size)
+                bin_time = np.linspace(event_onset-baseline_buffer, event_offset, num_bin+1)
+                tmp_count = np.zeros(num_bin, )
+                for bin_idx in range(num_bin):
+                    tmp_count[bin_idx] = len([1 for spike_time in neuron_spikes 
+                            if spike_time>=bin_time[bin_idx] and spike_time<=bin_time[bin_idx+1]])
+                    tmp_count[bin_idx] /= bin_size
+                
+                psth[neuron_idx].append(moving_average(tmp_count, num_smooth))
+
+    # average psth
+    bin_interval = (stim_time+baseline_buffer)/num_bin
+    tick_label = [round((bin_size*idx_-baseline_buffer)*1000) for idx_ in range(num_bin)]
+    x_tick = np.linspace(0, len(tick_label)-1, 5, dtype=int)
+    tick_label = [tick_label[int(cur)] for cur in np.linspace(0, len(tick_label)-1, 5, dtype=int)]
+
+    for neuron_idx in range(len(psth)):
+        if len(psth[neuron_idx])==0:
+            continue
+
+        plt.close('all')
+        fig = plt.figure()
+        avg_psth = np.array(psth[neuron_idx]).mean(0)
+        plt.plot(np.arange(len(avg_psth)), avg_psth, 'b-')
+        plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
+        plt.ylabel('Firing Rating')
+        plt.xlabel('Time')
+        plt.xticks(x_tick, tick_label)  # Custom labels
+        fig.savefig(os.path.join(save_path, 'psth', str(cell_idx[neuron_idx])+'.png'), 
+                    bbox_inches='tight')        
+
+    # raster plot for each neuron
+    for neuron_idx in range(len(cell_idx)):
+        if len(raster[neuron_idx])==0:
+            continue
+        plt.close('all')
+        fig = plt.figure()            
+        ax = plt.gca()
+        ax.set_ylim(0, len(raster[neuron_idx])+2)
+        for i in range(len(raster[neuron_idx])):
+            ax.scatter(raster[neuron_idx][i], [i+1]*len(raster[neuron_idx][i]), c='black', marker='.', s=0.8)
+        plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
+        plt.xlabel('Time')
+        plt.xticks(tick_label)
+        plt.yticks([])
+
+        fig.savefig(os.path.join(save_path, 'raster', str(cell_idx[neuron_idx])+'.png'), bbox_inches='tight')
+
+
+

@@ -504,7 +504,7 @@ def compute_spatial_frequency(trial_data, wall_layout, array_size=1008, subset=N
             x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
             spatial_frequency[y_mapped, x_mapped] += 1
 
-    spatial_frequency /= spatial_frequency.max()
+    # spatial_frequency /= spatial_frequency.max()
     
     return spatial_frequency
 
@@ -601,3 +601,40 @@ def compute_face_map(trial_info, wall_layout, array_size=1008, subset=None):
             face_map[y_mapped, x_mapped] += 1
 
     return face_map
+
+def find_passage(player_data, place_field, pf_size,
+            x_min, x_max, y_min, y_max, array_size):
+    """ Find the time (blocks) when the agent passing through a place field.
+
+        Inputs:
+            - player_data: player data for the current trial.
+            - place_field: x, z location for the center of the place field.
+            - pf_size: tolerance for qualifying a passage.
+            - x_min/x_max/y_min/y_max, array_size: parameter for coordinate projection.
+    """
+    passage = []
+    start = None
+
+    # recording the time when the agent is closest to the center of the place field
+    closest_dist = None 
+    closest_time = None 
+
+    for i in range(len(player_data['Pos'])):
+        x, y, = player_data['Pos'][i][0], player_data['Pos'][i][2]
+        x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+        dist_to_center = np.sqrt((x_mapped-place_field[0])**2+(y_mapped-place_field[1])**2)
+        if dist_to_center<=pf_size:
+            if start is None:
+                start = player_data['SyncedTime'][i]
+                closest_dist = dist_to_center
+                closest_time = player_data['SyncedTime'][i]
+            else:
+                if dist_to_center<closest_dist:
+                    closest_dist = dist_to_center
+                    closest_time = player_data['SyncedTime'][i]
+        else:
+            if start is not None:
+                passage.append([start, player_data['SyncedTime'][i], closest_time])
+            start = None
+    
+    return passage
