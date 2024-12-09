@@ -23,6 +23,12 @@ room_color = {'circle': 'red', 'rectangle': 'aqua',
               'triangle_diamond': 'slategrey'
               }
 
+room_connectivity = {'triangle': ['diamond'],
+                     'diamond': ['triangle', 'rectangle', 'circle'],
+                     'rectangle': ['circle', 'diamond'],
+                     'circle': ['diamond', 'rectangle']
+                    }
+
 def PSTH_by_face_polyface(trial_data, trial_info, wall_layout, 
                           tolerance=8, stim_time=0.45, bin_size=0.02,
                             baseline_buffer=0.15, num_smooth=3, drop_invalid=True,
@@ -563,28 +569,60 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
     # framing binary classification for each room/corridor types
     # equal amount of samples for each class are sampled
     result_by_room  = dict() 
-    room_idx_data = dict()
+    result_by_room_connected = dict()
+    result_by_room_disconnected = dict()
+
+    room_idx_data_general = dict()
+    room_idx_data_connected = dict()
+    room_idx_data_disconnected = dict()
     room_label = dict()
+
     for room in label_mapping:
         result_by_room[room] = dict()
+        result_by_room_connected[room] = dict()
+        room_idx_data_connected[room] = dict()
         positive_idx = np.where(temporal_population_label==label_mapping[room])[0]
-        negative_idx = np.where(temporal_population_label!=label_mapping[room])[0]
+        
+        # sample negative pairs by room connectivity
+        negative_idx_general = np.where(temporal_population_label!=label_mapping[room])[0]
+        negative_idx_general = np.random.choice(negative_idx_general, size=len(positive_idx), replace=False)
+        negative_pool_connected = [label_mapping[cur] for cur in label_mapping if cur in room_connectivity[room]]
+        negative_idx_connected = np.array([idx for idx in range(len(temporal_population_label)) 
+                    if temporal_population_label[idx] in negative_pool_connected])
+        negative_idx_connected = np.random.choice(negative_idx_connected, size=len(positive_idx), replace=False)
+        room_idx_data_general[room] = np.concatenate((positive_idx, negative_idx_general), axis=0)
+        room_idx_data_connected[room] = np.concatenate((positive_idx, negative_idx_connected), axis=0)
 
-        negative_idx = np.random.choice(negative_idx, size=len(positive_idx), replace=False)
-        room_idx_data[room] = np.concatenate((positive_idx, negative_idx), axis=0)
-        room_label[room] = np.array([1]*len(positive_idx) + [0]*len(negative_idx))
+        # Diamond is connected to all other rooms
+        if room != 'diamond':
+            result_by_room_disconnected[room] = dict()
+            room_idx_data_disconnected[room] = dict()
+            negative_pool_disconnected = [label_mapping[cur] for cur in label_mapping 
+                                    if cur!=room and cur not in room_connectivity[room]]
+            negative_idx_disconnected = np.array([idx for idx in range(len(temporal_population_label)) 
+                        if temporal_population_label[idx] in negative_pool_disconnected])
+            negative_idx_disconnected = np.random.choice(negative_idx_disconnected, size=len(positive_idx), replace=False)
+            room_idx_data_disconnected[room] = np.concatenate((positive_idx, negative_idx_disconnected), axis=0)
+
+        room_label[room] = np.array([1]*len(positive_idx) + [0]*len(positive_idx))
+
 
     for t in temporal_population_response:
         result[t] = kfold_cross_validation(temporal_population_response[t], 
                                      temporal_population_label,
                                      k_fold, classifier, reg_para)
         
-        for room in label_mapping:
-            tmp_data = [temporal_population_response[t][idx] for idx in room_idx_data[room]]
-            result_by_room[room][t] = kfold_cross_validation(tmp_data, 
-                                     room_label[room],
-                                     k_fold, classifier, reg_para)
-            
+        # per-room decoding performance
+        for (room_idx_data, cur_decoding_result) in zip(
+                [room_idx_data_general, room_idx_data_connected, room_idx_data_disconnected],
+                [result_by_room, result_by_room_connected, result_by_room_disconnected]
+                ):
+            for room in cur_decoding_result:
+                tmp_data = [temporal_population_response[t][idx] for idx in room_idx_data[room]]
+                cur_decoding_result[room][t] = kfold_cross_validation(tmp_data, 
+                                            room_label[room],
+                                            k_fold, classifier, reg_para, report_confidence=True)
+
 
     # plot the figure for the decoding results
     # sort the temporal bin for plotting
@@ -592,28 +630,38 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
     x_tick = np.linspace(0, len(sorted_bin)-1, 5, dtype=int)
     tick_label = [int(sorted_bin[cur]*1000) for cur in np.linspace(0, len(sorted_bin)-1, 5, dtype=int)]
 
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    fig, axs = plt.subplots(1, 4, figsize=(20, 5))
     axs[0].plot(np.arange(len(sorted_bin)), [result[t] for t in sorted_bin], 'b-', linewidth=2, 
                 label='Overall Accuracy')
     axs[0].axhline(y=random_guess, color='gray', linestyle='--', linewidth=2) 
     axs[0].axvline(x=baseline_buffer/bin_size, color='gray', linestyle='--')
-    axs[0].set_title('Temporal decoding performance for all rooms')
+    axs[0].set_title('Temporal decoding of room category')
     axs[0].legend()
     axs[0].set_xticks(x_tick, tick_label) 
     axs[0].set_xlabel('Time')
     axs[0].set_ylabel('Accuracy')
 
-    axs[1].axhline(y=0.5, color='gray', linestyle='--', linewidth=2) 
-    for room in result_by_room:
-        axs[1].plot(np.arange(len(sorted_bin)), [result_by_room[room][t] for t in sorted_bin], 
-                    color=room_color[room], linewidth=2, 
-                    label=room)
-    axs[1].set_xticks(x_tick, tick_label) 
-    axs[1].axvline(x=baseline_buffer/bin_size, color='gray', linestyle='--')
-    axs[1].set_title('Temporal decoding performance for each room')
-    axs[1].set_xlabel('Time')
-    axs[1].set_ylabel('Accuracy')
-    axs[1].legend()
+    result_by_room_pool = [result_by_room, result_by_room_connected, result_by_room_disconnected]
+    name = [('General'), '(Connected)', '(Disconnected)']
+    for fig_idx in range(1, 4):
+        axs[fig_idx].axhline(y=0.5, color='gray', linestyle='--', linewidth=2) 
+        for room in result_by_room_pool[fig_idx-1]:
+            axs[fig_idx].plot(np.arange(len(sorted_bin)), [result_by_room_pool[fig_idx-1][room][t] for t in sorted_bin], 
+                        color=room_color[room], linewidth=2, 
+                        label=room)
+        axs[fig_idx].set_xticks(x_tick, tick_label) 
+        axs[fig_idx].axvline(x=baseline_buffer/bin_size, color='gray', linestyle='--')
+        axs[fig_idx].set_title('Per-room decoding '+name[fig_idx-1])
+        axs[fig_idx].set_xlabel('Time')
+        if fig_idx == 1:
+            axs[fig_idx].set_ylabel('Confidence on Correct Label')
+            axs[fig_idx].set_ylim(0.45, 0.7)
+        else:
+            axs[fig_idx].set_ylabel(None)
+            axs[fig_idx].sharey(axs[1])
+
+        axs[fig_idx].legend()
+
 
     fig.savefig(save_path, bbox_inches='tight')
 

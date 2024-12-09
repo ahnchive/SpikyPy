@@ -7,7 +7,7 @@ from matplotlib.colors import LinearSegmentedColormap
 def selectivity_visualization(trial_data, class_mapping, stim_start=0.1, stim_end=0.3, 
                               baseline_start=0.05, baseline_end=0.1, 
                               cell_type='rML', sort_cat=None, save_path=None):
-    """ Drawing the classic "organge plot" for the class selectivity during passive
+    """ Drawing the classic "orange plot" for the class selectivity during passive
         fixation experiment. 
 
         Inputs:
