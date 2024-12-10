@@ -468,7 +468,7 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
             if trial_data['Neuron_type'][idx]==cell_type]    
 
     temporal_population_response = dict()
-    num_bin = int((stim_time+baseline_buffer)/bin_size)
+    num_bin = int((stim_time+baseline_buffer)/bin_size)+1
     for i in range(num_bin):
         temporal_population_response[(i*bin_size)-baseline_buffer] = []
     
@@ -530,7 +530,6 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
                     start, end = bin_time[bin_idx], bin_time[bin_idx+1]
                     population_response = compute_population_response(neuron_spikes, start, end)
                     temporal_population_response[(bin_idx*bin_size)-baseline_buffer].append(population_response)
-    
 
     # perform k-fold evaluation with the collected data
     print('Number of samples %d' %len(temporal_population_label))
