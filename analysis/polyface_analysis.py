@@ -31,8 +31,10 @@ room_connectivity = {'triangle': ['diamond'],
 
 def PSTH_by_face_polyface(trial_data, trial_info, wall_layout, 
                           tolerance=8, stim_time=0.45, bin_size=0.02,
-                            baseline_buffer=0.15, num_smooth=3, drop_invalid=True,
-                          cell_type='rML', save_path=None, subset=None, strict=False):
+                            baseline_buffer=0.15, num_smooth=3, stim_start=0.05,
+                            stim_end=0.25, drop_invalid=True,
+                          cell_type='rML', save_path=None, subset=None, strict=False,
+                          fsi_score = None, fsi_thres=0.2):
     """ Compute the PSTH for the onset of different events, i.e., looking at 
         target/non-target/not-face. It only considers the spike firing rates for the first
         bin after onset. Events shorter than the specified bin size will be dropped by default.
@@ -46,6 +48,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
             - stim_time: time after the stimulus onset to compute the PSTH.
             - bin_size: bin size (in second) to compute the fine-grained PSTH.
             - num_smooth: number of historical bins for smoothing.
+            - stim_start/stim_end: time window to compute the average firing rate (for scatter plot and histogram)
             - baseline_buffer: K ms before event onset as baseline.
             - drop_invalid: dropping the invalid data (shorter than specified stim_time) or not .
             - cell_type: type of cells for consideration
@@ -53,13 +56,16 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
             - subset: If not None, only compute the stat based on the given subset of trial number.
             - strict: If yes, only consider the target face responses from the correct trials, and non-target
                     face response from the wrong trials.
+            - fsi_score: if not None, only consider cell with fsi score later than a predefined threshold. Note that
+                    the neuron index should be pre-aligned
+            - fsi_thres: fsi threshold
     """
     os.makedirs(save_path, exist_ok=True)
 
     # get the index of selected cells
     cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
             if trial_data['Neuron_type'][idx]==cell_type]
-
+    
     # get the locations of faces in different trials
     face_loc = get_face_pos(trial_info)
     
@@ -120,8 +126,8 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
                     
                     # compute the averaged firing rate throughout the whole stim onset time
                     spike_count = len([1 for spike_time in neuron_spikes 
-                                if spike_time>=event_onset and spike_time<=event_offset])
-                    firing_rate = spike_count/event_time
+                                if spike_time>=event_onset+stim_start and spike_time<=event_onset+stim_end])
+                    firing_rate = spike_count/(stim_end-stim_start)
 
                     # compute the fine PSTH
                     num_bin = int((stim_time+baseline_buffer)/bin_size)
@@ -161,8 +167,8 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
                 if event_time<stim_time:
                     continue
                 spike_count = len([1 for spike_time in neuron_spikes 
-                                if spike_time>=event[0] and spike_time<=event[0]+stim_time])   
-                firing_rate = spike_count/event_time             
+                                if spike_time>=event[0]+stim_start and spike_time<=event[0]+stim_end])   
+                firing_rate = spike_count/(stim_end-stim_start)             
                 psth['non_face'][neuron_idx].append(firing_rate)
 
     # averaging
@@ -172,7 +178,30 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
                 psth[k][neuron_idx] = 0
             else:
                 psth[k][neuron_idx] = np.mean(psth[k][neuron_idx])
-    
+
+    if fsi_score is not None:
+        valid_idx = [idx for idx in range(len(cell_idx)) if fsi_score[idx]>fsi_thres]
+    else:
+        valid_idx = [idx for idx in range(len(cell_idx))]
+
+    # draw a scatter plot of the average firing rate
+    plt.close('all')
+    fig = plt.figure()
+    x = psth['non_target_face']
+    y = psth['target_face']
+    if fsi_score is None:
+        plt.scatter(x, y, c='blue', marker='d', s=25)
+    else:
+        x_high, y_high = np.array(x)[valid_idx], np.array(y)[valid_idx]
+        x_low = np.array(x)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
+        y_low = np.array(y)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
+        plt.scatter(x_high, y_high, c='red', marker='d', s=25)
+        plt.scatter(x_low, y_low, c='blue', marker='d', s=25)
+
+    plt.plot(np.linspace(0, np.max(x)), np.linspace(0, np.max(x)), color='gray', linestyle='--')
+    fig.set_size_inches(5, 5)
+    fig.savefig(os.path.join(save_path, 'scatter_plot.png'), bbox_inches='tight', dpi=400)
+
     # draw the distribution of firing rate as a histogram plot
     num_categories = len(psth)
     categories = list(psth.keys())
@@ -181,7 +210,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     plt.close('all')
     fig, axes = plt.subplots(1, num_categories, figsize=(5 * num_categories, 5), sharey=True, sharex=True)
     for i, category in enumerate(categories):
-        firing_rates = psth[category]
+        firing_rates = np.array(psth[category])[valid_idx]
         # Create a histogram
         axes[i].hist(firing_rates, bins=30, edgecolor="black", alpha=0.7)
         axes[i].set_title(category)
@@ -204,7 +233,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
 
     fig, axes = plt.subplots(1, num_categories, figsize=(5 * num_categories, 5), sharey=True)
     for i, category in enumerate(categories):
-        firing_rates_diff = psth_diff[category]
+        firing_rates_diff = np.array(psth_diff[category])[valid_idx]
         # Create a histogram
         axes[i].hist(firing_rates_diff, bins=30, edgecolor="black", alpha=0.7)
         axes[i].set_title(category)
@@ -232,6 +261,8 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     sort_idx = np.argsort(tsi_val)[::-1]
 
     for sort_id, neuron_idx in enumerate(sort_idx):
+        if fsi_score is not None and neuron_idx not in valid_idx:
+            continue
         plt.close('all')
         target_face = avg_psth[neuron_idx]['target']
         non_target_face = avg_psth[neuron_idx]['non_target']

@@ -6,6 +6,7 @@ from analysis.decoding import kfold_cross_validation
 from analysis.metrics import FSI
 import os
 from sklearn.metrics.pairwise import cosine_similarity
+EPSILON=1e-15
 
 def selectivity_visualization(trial_data, class_mapping, stim_start=0.1, stim_end=0.3, 
                               baseline_start=0.05, baseline_end=0.1, 
@@ -261,6 +262,7 @@ def template_matching(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
     fig = plt.figure()
     avg_face = np.array([avg_stim_response[:, idx] for idx in range(len(class_mapping)) if class_mapping[idx]=='face'])
     avg_other = np.array([avg_stim_response[:, idx] for idx in range(len(class_mapping)) if class_mapping[idx]!='face'])
+
     fsi = FSI(avg_face.mean(0), avg_other.mean(0))
     if num_select_neuron is None:
         selected_fsi = fsi
@@ -306,10 +308,10 @@ def template_matching(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
             for j in range(len(stim_response)):
                 source_vector = np.array([stim_response[i][idx] for idx in source_idx])
                 source_vector = source_vector.mean(0) if num_source>1 else source_vector
-                source_vector = (source_vector-min_response)/(max_response-min_response)
+                source_vector = (source_vector-min_response)/(max_response-min_response+EPSILON)
                 target_vector = np.array([stim_response[j][idx] for idx in target_idx])
                 target_vector = target_vector.mean(0) 
-                target_vector = (target_vector-min_response)/(max_response-min_response)
+                target_vector = (target_vector-min_response)/(max_response-min_response+EPSILON)
 
                 if metric == 'euclidean':
                     dist = np.linalg.norm(source_vector - target_vector)
@@ -391,3 +393,52 @@ def template_matching(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
     fig.savefig(os.path.join(save_path, 'decoding.pdf'), bbox_inches='tight')
 
 
+def compute_fsi(trial_data, class_mapping, stim_start=0.1, stim_end=0.3, 
+                    cell_type='rML'):
+    """ Compute the fsi score for each neuron based on FOB data.
+
+        Inputs:
+            -trial_data: processed trial data.
+            -class_mapping: mapping from each stimulus to its class label,
+                        assuming that the mapping is in blocks, e.g., 0-k class 1,
+                        k+1:2k+1 class 2.
+            -stim_start/end: start/end time for computing the stimulus response.
+
+        Return:
+            FSI score for each neuron stored as an array
+    """
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]
+    
+    avg_stim_response = np.zeros([len(cell_idx), len(class_mapping)])
+    stim_count = np.zeros([len(class_mapping),])
+
+    for trial_idx in range(len(trial_data['Paradigm']['PassiveFixation']['Number'])):
+        # drop invalid trials
+        if np.isnan(trial_data['Paradigm']['PassiveFixation']['End_Correct'][trial_idx]):
+            continue
+
+        stim_id = trial_data['Paradigm']['PassiveFixation']['Stimulus'][trial_idx]
+        stim_count[stim_id] += 1
+        trial_onset = trial_data['Paradigm']['PassiveFixation']['Start_Align'][trial_idx]
+
+        # compute the stim average firing rate for each neuron/repetition
+        for neuron_idx, neuron in enumerate(cell_idx):
+            neuron_spikes = [cur for cur in trial_data['Paradigm']['PassiveFixation']['Spike'][trial_idx][neuron]]
+
+            stim_spike_count = len([1 for spike_time in neuron_spikes 
+                        if spike_time-trial_onset>=stim_start and spike_time-trial_onset<=stim_end])
+            stim_firing_rate = stim_spike_count/(stim_end-stim_start)
+            avg_stim_response[neuron_idx, stim_id] += stim_firing_rate
+
+    for i in range(len(stim_count)):
+        avg_stim_response[:, i] /= stim_count[i]
+
+
+    # compute the histogram of FSI
+    avg_face = np.array([avg_stim_response[:, idx] for idx in range(len(class_mapping)) if class_mapping[idx]=='face'])
+    avg_other = np.array([avg_stim_response[:, idx] for idx in range(len(class_mapping)) if class_mapping[idx]!='face'])
+
+    fsi = FSI(avg_face.mean(0), avg_other.mean(0))
+    return fsi
