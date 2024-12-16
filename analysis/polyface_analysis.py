@@ -4,7 +4,7 @@ from polyface.PolyfaceUtil import map_coordinates, compute_spatial_frequency, co
 from matplotlib import pyplot as plt
 import os
 from analysis.util import moving_average, compute_population_response, check_eye_interaction
-from analysis.decoding import kfold_cross_validation
+from analysis.decoding import kfold_cross_validation, kfold_cross_validation_regression
 from scipy.ndimage import gaussian_filter
 from scipy.stats import spearmanr
 from matplotlib.patches import Circle
@@ -34,7 +34,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
                             baseline_buffer=0.15, num_smooth=3, stim_start=0.05,
                             stim_end=0.25, drop_invalid=True,
                           cell_type='rML', save_path=None, subset=None, strict=False,
-                          fsi_score = None, fsi_thres=0.2):
+                          fsi_score = None, fsi_thres=0.2, cue_time=0.6):
     """ Compute the PSTH for the onset of different events, i.e., looking at 
         target/non-target/not-face. It only considers the spike firing rates for the first
         bin after onset. Events shorter than the specified bin size will be dropped by default.
@@ -59,6 +59,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
             - fsi_score: if not None, only consider cell with fsi score later than a predefined threshold. Note that
                     the neuron index should be pre-aligned
             - fsi_thres: fsi threshold
+            - cue_time: time before cue offset for computing the cue firing rate
     """
     os.makedirs(save_path, exist_ok=True)
 
@@ -78,6 +79,9 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     psth_fg = {'target_face': [[] for _ in range(len(cell_idx))], 
             'non_target_face':[[] for _ in range(len(cell_idx))], 
             'non_face': [[] for _ in range(len(cell_idx))]}
+    
+    # compute the average firing for cue first
+    cue_firing = compute_cue_firing_rate(trial_data, cue_time, cell_type, subset)
 
     # iterate through all trials
     for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
@@ -184,7 +188,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     else:
         valid_idx = [idx for idx in range(len(cell_idx))]
 
-    # draw a scatter plot of the average firing rate
+    # draw a scatter plot of the average firing rate between target/non-target
     plt.close('all')
     fig = plt.figure()
     x = psth['non_target_face']
@@ -201,6 +205,24 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     plt.plot(np.linspace(0, np.max(x)), np.linspace(0, np.max(x)), color='gray', linestyle='--')
     fig.set_size_inches(5, 5)
     fig.savefig(os.path.join(save_path, 'scatter_plot.png'), bbox_inches='tight', dpi=400)
+
+    # draw a scatter plot of the average firing rate between target face in arena and cue
+    plt.close('all')
+    fig = plt.figure()
+    x = cue_firing
+    y = psth['target_face']    
+    if fsi_score is None:
+        plt.scatter(x, y, c='blue', marker='d', s=25)
+    else:
+        x_high, y_high = np.array(x)[valid_idx], np.array(y)[valid_idx]
+        x_low = np.array(x)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
+        y_low = np.array(y)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
+        plt.scatter(x_high, y_high, c='red', marker='d', s=25)
+        plt.scatter(x_low, y_low, c='blue', marker='d', s=25)
+
+    plt.plot(np.linspace(0, np.max(x)), np.linspace(0, np.max(x)), color='gray', linestyle='--')
+    fig.set_size_inches(5, 5)
+    fig.savefig(os.path.join(save_path, 'scatter_plot_cue.png'), bbox_inches='tight', dpi=400)
 
     # draw the distribution of firing rate as a histogram plot
     num_categories = len(psth)
@@ -695,6 +717,184 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
 
     fig.savefig(save_path, bbox_inches='tight')
 
+def room_regressor_polyface(trial_data, wall_layout, stim_start=-0.15, stim_end=0.2, bin_size=0.1, step_size=0.05,
+                            cell_type='rEC', k_fold=5, save_path=None, subset=None, reg_para=1,
+                            vmin=None, vmax=None, regressor='ridge', kernel='rbf'):
+    """ Analysis regarding the temporal decoding of spatial locations. By default, it
+    uses a standard linear regression. The results are based on a K-fold evaluation.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - wall_layout: layout of the room for computing the spatial error map.
+            - stim_start/end: time w.r.t. the location "onset" to extract the neural responses.
+            - bin_size: bin size to compute the population response
+            - step_size: step interval for performing the neural response sweep
+            - cell_type: neuron type for collecting the population response.
+            - k_fold: number of folds for k-fold validation.
+            - save_path: path for saving the results.
+            - subset: if not None, only consider samples from the subset.
+            - reg_para: regularization parameter for the classifier.
+            - vmin/vmax: parameters for the hexagon plot.
+            - regressor: model used for decoding
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    # hardcode the x-z min/max for normalization
+    min_x, max_x = -12, 5
+    min_z, max_z = -6.5, 11
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]    
+
+    num_bin = int((stim_end-stim_start-bin_size)//step_size) + 1
+    temporal_population_response = [[] for _ in range(num_bin)]
+    temporal_label = []
+
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue
+
+        # determine the type of the current trial
+        for type_ in ['End_Correct', 'End_Miss', 'End_Wrong']:
+            if not np.isnan(trial_data['Paradigm']['PolyFaceNavigator'][type_][trial_idx]):
+                cur_type = type_
+                break
+
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['On'][trial_idx]
+        trial_offset = trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx]
+
+        # interpolate/reorganize player data with eye data 
+        player_data = trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx]
+        eye_data = trial_data['Paradigm']['PolyFaceNavigator']['Eye_arena'][trial_idx]
+        processed_player = {'time': [], 'position': []}
+        for t in eye_data['SyncedTime']:
+            player_idx = find_closest(t, player_data['SyncedTime'])
+            pos = player_data['Pos'][player_idx]
+            processed_player['time'].append(t)
+            cur_x = (pos[0] - min_x)/(max_x-min_x)
+            cur_z = (pos[2] - min_z)/(max_z-min_z)
+            processed_player['position'].append([cur_x, cur_z])
+
+        # collect the neural data when passing through different locations
+        # reorganize the neuron responses (may lose tiny precision)
+        time_window = int((trial_offset-trial_onset)*1000)
+        processed_neuron_spikes = np.zeros([time_window, len(cell_idx)])
+        for neuron_idx, neuron in enumerate(cell_idx):
+            for cur_spike in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]:
+                spike_time = int((cur_spike-trial_onset)*1000)-1
+                processed_neuron_spikes[spike_time, neuron_idx] += 1
+
+        # iterate through each valid period/location
+        for t_idx, t in enumerate(processed_player['time']):
+            if t+stim_start<trial_onset or t+stim_end>trial_offset:
+                continue
+            
+            for bin_idx in range(num_bin):
+                cur_start, cur_end = stim_start+bin_idx*bin_size, stim_start+(bin_idx+1)*bin_size
+                cur_start = int((t+cur_start-trial_onset)*1000)
+                cur_end = int((t+cur_end-trial_onset)*1000)
+                firing_rate = processed_neuron_spikes[cur_start:cur_end, :].sum(0)/bin_size
+                temporal_population_response[bin_idx].append(firing_rate)
+
+            temporal_label.append(processed_player['position'][t_idx])
+
+    temporal_label = np.array(temporal_label)
+    temporal_population_response = np.array(temporal_population_response)
+
+    # gather the boundary of the environments
+    all_x, all_y = [], []
+    for wall in wall_layout:
+        x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        all_x.extend(x)
+        all_y.extend(y)
+
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+    array_size = 1008
+
+    # k-fold validation with regression
+    for bin_idx in range(num_bin):
+        record = kfold_cross_validation_regression(temporal_population_response[bin_idx],
+                                                    temporal_label, k_fold, reg_para, regressor,
+                                                    kernel)
+
+        # convert normalized position back to original one
+        record['gt'][:, 0] = record['gt'][:, 0]*(max_x-min_x) + min_x
+        record['gt'][:, 1] = record['gt'][:, 1]*(max_z-min_z) + min_z
+        record['pred'][:, 0] = record['pred'][:, 0]*(max_x-min_x) + min_x
+        record['pred'][:, 1] = record['pred'][:, 1]*(max_z-min_z) + min_z
+        cur_error = np.sqrt(((record['gt']-record['pred'])**2).sum(-1))
+
+        # initialize the error map for each bin
+        error_map = [[[] for _ in range(array_size)] for _ in range(array_size)]
+
+        # assign the error to different spatial locations
+        for idx in range(len(record['gt'])):
+            x, y = record['gt'][idx]
+            x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
+            error_map[y_mapped][x_mapped].append(cur_error[idx])
+
+        for x in range(array_size):
+            for y in range(array_size):
+                error_map[y][x] = np.mean(error_map[y][x]) if len(error_map[y][x])>0 else -1
+
+        # visualize the error as a hexbin heatmap
+        error_map = np.array(error_map)
+        # Parameters
+        hex_size = 0.5  # Size of each hexagon
+
+        # Create grid of points
+        rows, cols = error_map.shape
+        x = np.arange(cols) * hex_size * 3 / 4  # x-coordinates of the hexagon centers
+        y = np.arange(rows) * hex_size * np.sqrt(3) / 2  # y-coordinates of the hexagon centers
+        xx, yy = np.meshgrid(x, y)
+
+        # Compute average value for each hexagon
+        hex_values = []
+        for i in range(rows):
+            for j in range(cols):
+                val = error_map[i, j]
+                if val != -1:  # Ignore -1
+                    hex_values.append((xx[i, j], yy[i, j], val))
+                else:
+                    hex_values.append((xx[i, j], yy[i, j], np.nan))  # Mark as NaN
+
+        hex_x, hex_y, hex_avg = zip(*hex_values)
+        hex_avg = np.array(hex_avg)
+
+        # Create a custom colormap with white for NaN
+        cmap = plt.cm.viridis
+        cmap.set_bad(color='white')
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(12, 10))  # Increase figure size for larger array
+        sc = ax.hexbin(
+            hex_x, hex_y, C=hex_avg, gridsize=30, cmap=cmap, mincnt=1,
+            linewidths=0.2, edgecolors='gray', reduce_C_function=np.nanmean
+        )
+
+        vmin = vmin if vmin is not None else np.nanmin(hex_avg)
+        vmax = vmax if vmax is not None else np.nanmax(hex_avg)
+        sc.set_clim(vmin=vmin, vmax=vmax)
+
+        # Add colorbar
+        cb = plt.colorbar(sc, ax=ax)
+        cb.set_label("Decoding Error")
+        cur_start, cur_end = stim_start+bin_idx*bin_size, stim_start+(bin_idx+1)*bin_size
+        cur_start, cur_end = round(cur_start*1000), round(cur_end*1000)
+        fig.savefig(os.path.join(save_path, 
+                                 'spatial_decoding_error_'+str(cur_start)+'_'+str(cur_end)+cell_type+'.png'), 
+                    bbox_inches='tight')
+        
+    return temporal_population_response, temporal_label
 
 def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rEC', 
                           save_path=None, subset=None, pf_size=10):
@@ -757,12 +957,10 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
             for spike in neuron_spikes:
                 if spike<=trial_onset:
                     continue
-
                 loc_idx = find_closest(spike, player_data['SyncedTime'])
                 x, y = player_data['Pos'][loc_idx][0], player_data['Pos'][loc_idx][2] # actually x-z in Unity
                 x_mapped, y_mapped = map_coordinates(x, y, x_min, x_max, y_min, y_max, array_size)
                 place_fields[neuron_idx, y_mapped, x_mapped] += 1
-
 
     # generate the heatmaps
     extent = [x_min, x_max, y_min, y_max]
@@ -957,4 +1155,54 @@ def place_field_psth(trial_data, place_field, wall_layout, cell_type='rEC',
         fig.savefig(os.path.join(save_path, 'raster', str(cell_idx[neuron_idx])+'.png'), bbox_inches='tight')
 
 
+def compute_cue_firing_rate(trial_data, stim_time=0.6,
+                          cell_type='rML', subset=None,
+                          ):
+    """ Computer the average firing rate during the cue phase.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - stim_time: time before the offset to compute the average firing rate.
+            - cell_type: type of cells for consideration
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+            - fsi_score: if not None, only consider cell with fsi score later than a predefined threshold. Note that
+                    the neuron index should be pre-aligned
+            - fsi_thres: fsi threshold
+        
+        Returns:
+            Average firing rate for each neuron.
+    """
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]   
+
+    avg_firing = []
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue
+        
+        trial_offset = trial_data['Paradigm']['PolyFaceNavigator']['Off'][trial_idx]
+
+        tmp_firing = []
+        for neuron_idx, neuron in enumerate(cell_idx):
+            neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
+            spike_count = len([1 for spike_time in neuron_spikes 
+                        if spike_time>=trial_offset-stim_time and spike_time<=trial_offset])
+            firing_rate = spike_count/stim_time
+            tmp_firing.append(firing_rate)
+        
+        avg_firing.append(tmp_firing)
+    
+    avg_firing = np.array(avg_firing).mean(0)
+
+    return avg_firing
 

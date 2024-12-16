@@ -1,8 +1,10 @@
 from sklearnex import patch_sklearn, config_context
 patch_sklearn()
-from sklearn.svm import LinearSVC
-from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC, SVR
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import KFold
+from sklearn.multioutput import MultiOutputRegressor
 import numpy as np
 
 def kfold_cross_validation(feature, label, k, classifier, reg_para,
@@ -70,3 +72,45 @@ def kfold_cross_validation(feature, label, k, classifier, reg_para,
         for k in avg_acc:
             avg_acc[k] = np.mean(avg_acc[k])
         return avg_acc
+    
+
+def kfold_cross_validation_regression(feature, label, k, reg_para, regressor, kernel='rbf'):
+    """ kfold cross-validation for linear neural decoding for regression.
+
+        Inputs:
+            - features: features for decoding.
+            - label: label for decoding.
+            - k: number of folds.
+            - reg_para: regularization parameter.
+            - regressor: model used for regression
+
+        Return:
+            A dictionary storing the ground truth and prediction for each test sample
+    """
+
+    kf = KFold(n_splits=k)
+    record = {'gt': [], 'pred': []}
+
+    for i, (train_index, test_index) in enumerate(kf.split(feature)):
+        train_feat = np.array([feature[idx] for idx in train_index])
+        train_label = np.array([label[idx] for idx in train_index])
+        test_feat = np.array([feature[idx] for idx in test_index])
+        test_label = np.array([label[idx] for idx in test_index])
+
+        if regressor == 'ridge':
+            cls = Ridge(alpha=reg_para).fit(train_feat, train_label)
+        elif regressor == 'svr':
+            cls = MultiOutputRegressor(SVR(kernel=kernel, C=reg_para, max_iter=1500)).fit(train_feat, train_label)
+        elif regressor == 'random_forest':
+            cls = RandomForestRegressor(n_estimators=100).fit(train_feat, train_label)
+        else:
+            NotImplementedError('Selected model not supported')
+
+        pred_cls = cls.predict(test_feat)
+        record['gt'].extend(test_label)
+        record['pred'].extend(pred_cls)
+
+    record['gt'] = np.array(record['gt'])
+    record['pred'] = np.array(record['pred'])
+
+    return record
