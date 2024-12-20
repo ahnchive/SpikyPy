@@ -99,7 +99,8 @@ def selectivity_visualization(trial_data, class_mapping, stim_start=0.1, stim_en
 def stim_decoding(trial_data, class_mapping, stim_start=0.1, stim_end=0.3, 
                     baseline_start=0.05, baseline_end=0.1, 
                     cell_type='rML', sort_cat=None, category_decoding=False, k_fold=8,
-                    num_select_neuron=None, classifier='svc', reg_para=0.1, cat_subset=None, seed=888):
+                    num_select_neuron=None, classifier='svc', reg_para=0.1, cat_subset=None, seed=888,
+                    fsi_score=None, fsi_thres=0.2, kernel='linear', degree=3):
     """ Compute the decoding accuracy for each stimulus/category, by default it use
         k-fold cross-validation.
 
@@ -118,11 +119,19 @@ def stim_decoding(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
             -reg_para: regularization parameter for the classifier.
             -cat_subset: if not None, only work on a subset of samples from the specified categories (e.g., face).
             -seed: seed for reproducibility.
+            - fsi_score: if not None, only consider cell with fsi score later than a predefined threshold. Note that
+                    the neuron index should be pre-aligned
+            - fsi_thres: fsi threshold
+            - kernel: kernel for svm.
+            - degree: degree for poly kernel
     """
     np.random.seed(seed=seed)
     # get the index of selected cells
     cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
             if trial_data['Neuron_type'][idx]==cell_type]
+
+    if fsi_score is not None:
+        cell_idx = [cell_idx[idx] for idx in range(len(cell_idx)) if fsi_score[idx]>fsi_thres]
     
     avg_stim_response = np.zeros([len(cell_idx), len(class_mapping)])
     avg_baseline_response= np.zeros([len(cell_idx), len(class_mapping)])
@@ -158,7 +167,7 @@ def stim_decoding(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
             decoding_response[stim_id] = []
         decoding_response[stim_id].append(np.array(tmp_neuron_response))
 
-    # select the top-k most selective neurons
+    # select the top-k most selective neurons (legacy, use fsi instead)
     if num_select_neuron is not None:
         # normalize by repetitions
         for i in range(len(stim_count)):
@@ -196,9 +205,9 @@ def stim_decoding(trial_data, class_mapping, stim_start=0.1, stim_end=0.3,
 
     if not cat_subset and not category_decoding:
         avg_acc = kfold_cross_validation(feature, label, k_fold, classifier, reg_para, 
-                                        category_mapping=class_mapping)
+                                        category_mapping=class_mapping, kernel=kernel, degree=degree)
     else:
-        avg_acc = kfold_cross_validation(feature, label, k_fold, classifier, reg_para)
+        avg_acc = kfold_cross_validation(feature, label, k_fold, classifier, reg_para, kernel=kernel, degree=degree)
 
     return avg_acc
 

@@ -1,14 +1,15 @@
 from sklearnex import patch_sklearn, config_context
 patch_sklearn()
-from sklearn.svm import LinearSVC, SVR
+from sklearn.svm import LinearSVC, SVR, SVC
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.multioutput import MultiOutputRegressor
 import numpy as np
 
 def kfold_cross_validation(feature, label, k, classifier, reg_para,
-                           report_confidence=False, category_mapping=None):
+                           report_confidence=False, category_mapping=None,
+                           kernel='linear', degree=3):
     """ kfold cross-validation for linear neural decoding.
 
         Inputs:
@@ -21,18 +22,20 @@ def kfold_cross_validation(feature, label, k, classifier, reg_para,
                             the correct class instead of accuracy.
             - category_mapping if not None, return a dictionary storing the accuracy for different
                 category.
+            - kernel: kernel for svm.
+            - degree: degree for poly kernel
         Return:
             Decoding performance in accuracy.
     """
 
-    kf = KFold(n_splits=k)
+    kf = StratifiedKFold(n_splits=k, shuffle=True)
     if category_mapping is None:
         avg_acc = [] 
     else:
         avg_acc = dict()
         for k in np.unique(list(category_mapping.values())):
             avg_acc[k] = []
-    for i, (train_index, test_index) in enumerate(kf.split(feature)):
+    for i, (train_index, test_index) in enumerate(kf.split(feature, label)):
         train_feat = np.array([feature[idx] for idx in train_index])
         train_label = np.array([label[idx] for idx in train_index])
         test_feat = np.array([feature[idx] for idx in test_index])
@@ -41,7 +44,11 @@ def kfold_cross_validation(feature, label, k, classifier, reg_para,
         if classifier == 'logistic':
             cls = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
         elif classifier == 'svc':
-            cls = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+            if kernel == 'linear':
+                cls = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+            else:
+                cls = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+
         else:
             raise NotImplementedError(
                 "Support for the selected classifier is not implemented yet")

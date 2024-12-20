@@ -1,6 +1,7 @@
 import numpy as np
 from polyface.PolyfaceUtil import get_room_loc, get_face_pos, eye_face_interaction, find_transition, find_closest, find_passage
 from polyface.PolyfaceUtil import map_coordinates, compute_spatial_frequency, compute_reward_frequency, compute_face_map
+from polyface.PolyfaceUtil import get_face_interaction_data, get_replay_data
 from matplotlib import pyplot as plt
 import os
 from analysis.util import moving_average, compute_population_response, check_eye_interaction
@@ -9,6 +10,10 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import spearmanr
 from matplotlib.patches import Circle
 import cv2
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC, SVC
+from sklearn.model_selection import train_test_split
+from sklearn.metrics.pairwise import cosine_similarity
 
 room_color = {'circle': 'red', 'rectangle': 'aqua',
               'diamond': 'green', 'triangle': 'goldenrod',
@@ -81,7 +86,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
             'non_face': [[] for _ in range(len(cell_idx))]}
     
     # compute the average firing for cue first
-    cue_firing = compute_cue_firing_rate(trial_data, cue_time, cell_type, subset)
+    cue_firing = compute_cue_firing_rate(trial_data, cue_time, stim_start, stim_end, cell_type, subset).mean(0)
 
     # iterate through all trials
     for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
@@ -194,13 +199,13 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     x = psth['non_target_face']
     y = psth['target_face']
     if fsi_score is None:
-        plt.scatter(x, y, c='blue', marker='d', s=25)
+        plt.scatter(x, y, c='gray', marker='d', s=25, alpha=0.2)
     else:
         x_high, y_high = np.array(x)[valid_idx], np.array(y)[valid_idx]
         x_low = np.array(x)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
         y_low = np.array(y)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
-        plt.scatter(x_high, y_high, c='red', marker='d', s=25)
-        plt.scatter(x_low, y_low, c='blue', marker='d', s=25)
+        plt.scatter(x_low, y_low, c='gray', marker='d', s=25, alpha=0.2)
+        plt.scatter(x_high, y_high, c='black', marker='d', s=25)
 
     plt.plot(np.linspace(0, np.max(x)), np.linspace(0, np.max(x)), color='gray', linestyle='--')
     fig.set_size_inches(5, 5)
@@ -212,17 +217,32 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
     x = cue_firing
     y = psth['target_face']    
     if fsi_score is None:
-        plt.scatter(x, y, c='blue', marker='d', s=25)
+        plt.scatter(x, y, c='gray', marker='d', s=25, alpha=0.2)
     else:
         x_high, y_high = np.array(x)[valid_idx], np.array(y)[valid_idx]
         x_low = np.array(x)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
         y_low = np.array(y)[[idx for idx in range(len(cell_idx)) if idx not in valid_idx]]
-        plt.scatter(x_high, y_high, c='red', marker='d', s=25)
-        plt.scatter(x_low, y_low, c='blue', marker='d', s=25)
+        plt.scatter(x_low, y_low, c='gray', marker='d', s=25,alpha=0.2)
+        plt.scatter(x_high, y_high, c='black', marker='d', s=25)
 
     plt.plot(np.linspace(0, np.max(x)), np.linspace(0, np.max(x)), color='gray', linestyle='--')
     fig.set_size_inches(5, 5)
     fig.savefig(os.path.join(save_path, 'scatter_plot_cue.png'), bbox_inches='tight', dpi=400)
+
+    # scatter plot for difference between arena and cue target, vs fsi
+    plt.close('all')
+    fig = plt.figure()
+    task_diff = y-x
+    fsi = fsi_score
+    plt.scatter(fsi, task_diff, c='black', marker='d', s=25)
+    corr = np.corrcoef(fsi, task_diff)[0, 1]
+    corr_line = np.polyfit(fsi, task_diff, 1)  # Degree 1 for a line
+    m, b = corr_line
+    plt.plot(np.linspace(0, np.max(fsi)), m * np.linspace(0, np.max(fsi)) + b, color='gray', linestyle='--',
+             label= 'Pearson Correlation: %.2f'%corr)
+    fig.set_size_inches(5, 5)
+    plt.legend()
+    fig.savefig(os.path.join(save_path, 'scatter_plot_task_fsi.png'), bbox_inches='tight', dpi=400)
 
     # draw the distribution of firing rate as a histogram plot
     num_categories = len(psth)
@@ -281,6 +301,27 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
         tsi_val.append((target_face.mean()-non_target_face.mean())/(target_face.mean()+non_target_face.mean())) 
 
     sort_idx = np.argsort(tsi_val)[::-1]
+    
+    # plot the average psth over all neurons
+    plt.close('all')
+    if fsi_score is not None:
+        target_face_avg = np.array([avg_psth[idx]['target'] for idx in sort_idx if idx in valid_idx])
+        distractor_face_avg = np.array([avg_psth[idx]['non_target'] for idx in sort_idx if idx in valid_idx])
+    else:
+        target_face_avg = np.array([avg_psth[idx]['target'] for idx in sort_idx])
+        distractor_face_avg = np.array([avg_psth[idx]['non_target'] for idx in sort_idx])
+    target_face_avg = target_face_avg.mean(0)
+    distractor_face_avg = distractor_face_avg.mean(0)
+    fig = plt.figure()
+    plt.plot(np.arange(len(target_face_avg)), target_face_avg, 'r-', label='Target')
+    plt.plot(np.arange(len(distractor_face_avg)), distractor_face_avg, 'b-', label='Non-target')
+    plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
+    plt.ylabel('Firing Rate')
+    plt.xlabel('Time')
+    plt.xticks(x_tick, tick_label)  # Custom labels
+    plt.legend()
+    fig.savefig(os.path.join(save_path, 'average_psth.png'), 
+                bbox_inches='tight')
 
     for sort_id, neuron_idx in enumerate(sort_idx):
         if fsi_score is not None and neuron_idx not in valid_idx:
@@ -293,7 +334,7 @@ def PSTH_by_face_polyface(trial_data, trial_info, wall_layout,
         plt.plot(np.arange(len(target_face)), target_face, 'r-', label='Target')
         plt.plot(np.arange(len(non_target_face)), non_target_face, 'b-', label='Non-target')
         plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
-        plt.ylabel('Firing Rating')
+        plt.ylabel('Firing Rate')
         plt.xlabel('Time')
         plt.xticks(x_tick, tick_label)  # Custom labels
         plt.legend()
@@ -434,7 +475,7 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
                         color=room_color[room], label=room)
 
         plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
-        plt.ylabel('Firing Rating')
+        plt.ylabel('Firing Rate')
         plt.xlabel('Time')
         plt.xticks(x_tick, tick_label)  # Custom labels
         plt.legend()
@@ -477,7 +518,7 @@ def PSTH_by_room_polyface(trial_data, trial_info, wall_layout,
                             color=room_color[room], label=room)
 
         plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
-        plt.ylabel('Firing Rating')
+        plt.ylabel('Firing Rate')
         plt.xlabel('Time')
         plt.xticks(x_tick, tick_label)  # Custom labels
         plt.legend()
@@ -497,7 +538,7 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
                         baseline_buffer=0.2, cell_type='rEC', 
                         classifier='logistic', k_fold=5, save_path=None, 
                         subset=None, force_balanced=False, filter_onset=False,
-                        reg_para=1):
+                        reg_para=1, kernel='linear', degree=3):
     """ Analysis regarding the temporal decoding of spatial locations (e.g.,
         different rooms and corridor. The decoding is based on population responses,
         and assumes linear classifiers). The results are based on a K-fold evaluation.
@@ -514,6 +555,8 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
             - force_balanced: if yes, sample a balanced subset for experiment.
             - filter_onset: filter periods right after stim onset.
             - reg_para: regularization parameter for the classifier.
+            - kernel: kernel for svm.
+            - degree: degree for svm kernel.
     """
 
     # get the index of selected cells
@@ -551,7 +594,6 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
                                     trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx],
                                     trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx])
 
-        
         for room in room_block:
             if room == 'corridor':
                 continue
@@ -662,7 +704,7 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
     for t in temporal_population_response:
         result[t] = kfold_cross_validation(temporal_population_response[t], 
                                      temporal_population_label,
-                                     k_fold, classifier, reg_para)
+                                     k_fold, classifier, reg_para, kernel=kernel, degree=degree)
         
         # per-room decoding performance
         for (room_idx_data, cur_decoding_result) in zip(
@@ -673,7 +715,8 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
                 tmp_data = [temporal_population_response[t][idx] for idx in room_idx_data[room]]
                 cur_decoding_result[room][t] = kfold_cross_validation(tmp_data, 
                                             room_label[room],
-                                            k_fold, classifier, reg_para, report_confidence=True)
+                                            k_fold, classifier, reg_para, report_confidence=True, kernel=kernel,
+                                            degree=degree)
 
 
     # plot the figure for the decoding results
@@ -716,6 +759,89 @@ def room_decoding_polyface(trial_data, stim_time=1, bin_size=0.05,
 
 
     fig.savefig(save_path, bbox_inches='tight')
+
+def room_vector_polyface(trial_data, cell_type='rEC', save_path=None, 
+                        subset=None, filter_onset=False):
+    """ Analysis regarding average firing rate when navigating within different rooms.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - cell_type: neuron type for collecting the population response.
+            - save_path: path for saving the results.
+            - subset: if not None, only consider samples from the subset.
+            - filter_onset: filter periods right after stim onset.
+    """
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]    
+
+    avg_firing = {k: [] for k in ['circle', 'rectangle', 'diamond', 'triangle']}
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue
+
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['On'][trial_idx]
+
+        # determine the type of the current trial
+        for type_ in ['End_Correct', 'End_Miss', 'End_Wrong']:
+            if not np.isnan(trial_data['Paradigm']['PolyFaceNavigator'][type_][trial_idx]):
+                cur_type = type_
+                break
+
+        
+        room_block = get_room_loc(trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx],
+                                    trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx],
+                                    trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx])
+
+
+        neuron_spikes = [trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron_idx] 
+                        for neuron_idx in cell_idx]
+
+        for room in room_block:
+            if room == 'corridor':
+                continue
+            for block in room_block[room]:
+                if filter_onset and block[0]-0.2<=trial_onset:
+                    continue
+                # filter the cue phase
+                if block[1] <= trial_onset:
+                    continue
+
+                neuron_spikes = [trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron_idx] 
+                                for neuron_idx in cell_idx]
+                firing_rate = compute_population_response(neuron_spikes, block[0], block[1])
+                avg_firing[room].append(firing_rate)
+
+    for k in avg_firing:
+        avg_firing[k] = np.array(avg_firing[k]).mean(0)
+
+    room_pool = ['circle', 'rectangle', 'diamond', 'triangle']
+    heatmap = np.zeros([len(room_pool), len(room_pool)])
+    for i in range(len(room_pool)):
+        for j in range(i, len(room_pool)):
+            heatmap[i, j] = cosine_similarity(avg_firing[room_pool[i]].reshape([1, -1]), 
+                                              avg_firing[room_pool[j]].reshape(1, -1))[0, 0]
+            # heatmap[i, j] = np.linalg.norm(avg_firing[room_pool[i]]-avg_firing[room_pool[j]])
+    plt.close('all')
+    fig = plt.figure(figsize=(4, 4))
+    mask = np.triu(np.ones_like(heatmap, dtype=bool), k=1)
+    heatmap = np.where(mask, heatmap, np.nan)  # Set the lower triangle to NaN
+    heatmap = (heatmap - np.nanmin(heatmap))/(np.nanmax(heatmap) - np.nanmin(heatmap))
+
+    plt.imshow(heatmap, cmap='viridis', interpolation='nearest')
+    plt.xticks(ticks=range(len(room_pool)), labels=room_pool, rotation=45)
+    plt.yticks(ticks=range(len(room_pool)), labels=room_pool)    
+    plt.colorbar(label='Normalized cosine similarity')
+    fig.savefig(os.path.join(save_path, 'cosine_similarity.png'), bbox_inches='tight')
 
 def room_regressor_polyface(trial_data, wall_layout, stim_start=-0.15, stim_end=0.2, bin_size=0.1, step_size=0.05,
                             cell_type='rEC', k_fold=5, save_path=None, subset=None, reg_para=1,
@@ -797,7 +923,7 @@ def room_regressor_polyface(trial_data, wall_layout, stim_start=-0.15, stim_end=
                 continue
             
             for bin_idx in range(num_bin):
-                cur_start, cur_end = stim_start+bin_idx*bin_size, stim_start+(bin_idx+1)*bin_size
+                cur_start, cur_end = stim_start+bin_idx*step_size, stim_start+bin_idx*step_size + bin_size
                 cur_start = int((t+cur_start-trial_onset)*1000)
                 cur_end = int((t+cur_end-trial_onset)*1000)
                 firing_rate = processed_neuron_spikes[cur_start:cur_end, :].sum(0)/bin_size
@@ -869,6 +995,7 @@ def room_regressor_polyface(trial_data, wall_layout, stim_start=-0.15, stim_end=
 
         hex_x, hex_y, hex_avg = zip(*hex_values)
         hex_avg = np.array(hex_avg)
+        hex_avg = hex_avg/np.nanmax(hex_avg)
 
         # Create a custom colormap with white for NaN
         cmap = plt.cm.viridis
@@ -968,13 +1095,13 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
     for neuron_idx, neuron in enumerate(cell_idx):
         plt.close('all')
         fig, ax = plt.subplots()
-        # plot the walls
-        for wall in wall_layout:
-            x = [wall['startPoint']['x'], wall['endPoint']['x']]
-            y = [wall['startPoint']['y'], wall['endPoint']['y']]
-            plt.plot(x, y, c='black')
-        plt.axis('off')
-        fig.set_size_inches(8, 8)
+        # # plot the walls
+        # for wall in wall_layout:
+        #     x = [wall['startPoint']['x'], wall['endPoint']['x']]
+        #     y = [wall['startPoint']['y'], wall['endPoint']['y']]
+        #     plt.plot(x, y, c='black')
+        # plt.axis('off')
+        # fig.set_size_inches(8, 8)
 
         # normalization (with reward and spatial frequency) and Gaussian blurring
         cur_place_field = place_fields[neuron_idx]
@@ -983,16 +1110,51 @@ def place_field_visualization(trial_data, trial_info, wall_layout, cell_type='rE
         normalized_place_field = gaussian_filter(normalized_place_field, sigma=15)
         final_place_field.append(normalized_place_field)
 
-        # draw a circle to highlight the place field of the given size
-        pf_y_idx, pf_x_idx = np.unravel_index(normalized_place_field.argmax(), normalized_place_field.shape)
-        overlay = np.zeros((array_size, array_size, 4), dtype=np.uint8)  # RGBA overlay
-        cv2.circle(overlay, (pf_x_idx, pf_y_idx), pf_size, (255, 0, 0, 255), 2)  # Red circle with full opacity
+        # # draw a circle to highlight the place field of the given size
+        # pf_y_idx, pf_x_idx = np.unravel_index(normalized_place_field.argmax(), normalized_place_field.shape)
+        # overlay = np.zeros((array_size, array_size, 4), dtype=np.uint8)  # RGBA overlay
+        # cv2.circle(overlay, (pf_x_idx, pf_y_idx), pf_size, (255, 0, 0, 255), 2)  # Red circle with full opacity
 
-        im = ax.imshow(normalized_place_field, origin='lower', cmap='viridis', extent=extent, alpha=0.6, interpolation='nearest')
-        ax.imshow(overlay, origin='lower', extent=extent, interpolation='nearest')
+        # im = ax.imshow(normalized_place_field, origin='lower', cmap='viridis', extent=extent, alpha=0.6, interpolation='nearest')
+        # ax.imshow(overlay, origin='lower', extent=extent, interpolation='nearest')
 
-        colormap = plt.cm.viridis
-        colormap.set_under(color='white', alpha=0)
+        # colormap = plt.cm.viridis
+        # colormap.set_under(color='white', alpha=0)
+
+        # visualize place field as hexagon plot
+        hex_size = 0.5  # Size of each hexagon
+        rows, cols = normalized_place_field.shape
+        x = np.arange(cols) * hex_size * 3 / 4  # x-coordinates of the hexagon centers
+        y = np.arange(rows) * hex_size * np.sqrt(3) / 2  # y-coordinates of the hexagon centers
+        xx, yy = np.meshgrid(x, y)
+
+        # Compute average value for each hexagon
+        hex_values = []
+        for i in range(rows):
+            for j in range(cols):
+                val = normalized_place_field[i, j]
+                if val != 0:  # Ignore 0
+                    hex_values.append((xx[i, j], yy[i, j], val))
+                else:
+                    hex_values.append((xx[i, j], yy[i, j], np.nan))  # Mark as NaN
+
+        hex_x, hex_y, hex_avg = zip(*hex_values)
+        hex_avg = np.array(hex_avg)
+
+        # Create a custom colormap with white for NaN
+        cmap = plt.cm.viridis
+        cmap.set_bad(color='white')
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(12, 10))  # Increase figure size for larger array
+        sc = ax.hexbin(
+            hex_x, hex_y, C=hex_avg, gridsize=30, cmap=cmap, mincnt=1,
+            linewidths=0.2, edgecolors='gray', reduce_C_function=np.nanmean
+        )
+
+        vmin = np.nanmin(hex_avg)
+        vmax = np.nanmax(hex_avg)
+        sc.set_clim(vmin=vmin, vmax=vmax)
 
         fig.savefig(os.path.join(save_path, 'heatmap', str(neuron)+'.png'), bbox_inches='tight')
 
@@ -1131,7 +1293,7 @@ def place_field_psth(trial_data, place_field, wall_layout, cell_type='rEC',
         avg_psth = np.array(psth[neuron_idx]).mean(0)
         plt.plot(np.arange(len(avg_psth)), avg_psth, 'b-')
         plt.axvline(x=baseline_buffer/bin_interval, color='gray', linestyle='--')
-        plt.ylabel('Firing Rating')
+        plt.ylabel('Firing Rate')
         plt.xlabel('Time')
         plt.xticks(x_tick, tick_label)  # Custom labels
         fig.savefig(os.path.join(save_path, 'psth', str(cell_idx[neuron_idx])+'.png'), 
@@ -1155,22 +1317,23 @@ def place_field_psth(trial_data, place_field, wall_layout, cell_type='rEC',
         fig.savefig(os.path.join(save_path, 'raster', str(cell_idx[neuron_idx])+'.png'), bbox_inches='tight')
 
 
-def compute_cue_firing_rate(trial_data, stim_time=0.6,
-                          cell_type='rML', subset=None,
+def compute_cue_firing_rate(trial_data, cue_time=0.8, stim_start=0.05, stim_end=0.25,
+                          cell_type='rML', subset=None, face2id=None,
+                          trial_info=None
                           ):
     """ Computer the average firing rate during the cue phase.
 
         Inputs:
             - trial_data: pre-processed trial data.
-            - stim_time: time before the offset to compute the average firing rate.
+            - cue_time: time for triggering the cue fixation event.
+            - stim_start/end: time to compute the average response
             - cell_type: type of cells for consideration
             - subset: If not None, only compute the stat based on the given subset of trial number.
-            - fsi_score: if not None, only consider cell with fsi score later than a predefined threshold. Note that
-                    the neuron index should be pre-aligned
-            - fsi_thres: fsi threshold
+            - face2id: if not None, also compute the face identity for the cue
+            - trial_info: for extracting face identity
         
         Returns:
-            Average firing rate for each neuron.
+            Average firing rate for each neuron , (and face identity)
     """
 
     # get the index of selected cells
@@ -1178,6 +1341,10 @@ def compute_cue_firing_rate(trial_data, stim_time=0.6,
             if trial_data['Neuron_type'][idx]==cell_type]   
 
     avg_firing = []
+    if face2id is not None:
+        cue_label = []
+        face_loc = get_face_pos(trial_info)
+        id2face = {face2id[k]: k for k in face2id}
 
     # iterate through all trials
     for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
@@ -1189,6 +1356,11 @@ def compute_cue_firing_rate(trial_data, stim_time=0.6,
 
         if subset is not None and trial_number not in subset:
             continue
+
+        if face2id is not None:
+            cue_face = [k for k in face_loc[trial_number] if face_loc[trial_number][k]['isTarget']][0]
+            cue_face = id2face[cue_face].replace('target_', '').split('_')[0]
+            cue_label.append(cue_face)
         
         trial_offset = trial_data['Paradigm']['PolyFaceNavigator']['Off'][trial_idx]
 
@@ -1196,13 +1368,276 @@ def compute_cue_firing_rate(trial_data, stim_time=0.6,
         for neuron_idx, neuron in enumerate(cell_idx):
             neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
             spike_count = len([1 for spike_time in neuron_spikes 
-                        if spike_time>=trial_offset-stim_time and spike_time<=trial_offset])
-            firing_rate = spike_count/stim_time
+                        if spike_time>=trial_offset-cue_time+stim_start and spike_time<=trial_offset-cue_time+stim_end])
+            firing_rate = spike_count/(stim_end-stim_start)
             tmp_firing.append(firing_rate)
         
         avg_firing.append(tmp_firing)
     
-    avg_firing = np.array(avg_firing).mean(0)
+    avg_firing = np.array(avg_firing)
 
-    return avg_firing
+    if face2id is None:
+        return avg_firing
+    else:
+        return avg_firing, cue_label
 
+def face_replay_decoding(trial_data, trial_info, wall_layout, face2id, 
+                          tolerance=8, bin_size=0.1, step_size=0.05, stim_start=0.05,
+                          stim_end=0.4, drop_invalid=True,
+                          cell_type='rML', replay_thres=0.7, save_path=None, subset=None,
+                          fsi_score = None, fsi_thres=0.2, face_response=None, top_k=10,
+                          classifier='logistic', reg_para=1, kernel='linear', degree=3,
+                          replay_response=None, replay_target=None, num_repeat=10):
+    """ Face decoding for the neural responses when he is potentially replaying.
+
+    Inputs:
+            - trial_data: pre-processed trial data.
+            - trial_info: trial info read by MinosData.
+            - wall_layout: wall positions of the polyface environment.
+            - face2id: face2id mapping
+            - tolerance: tolerance angle between eye/object ray (to be changed to distance-based measurement).
+            - stim_start/end: start/end time to extract the neural responses, aligned to onset.
+            - bin_size: breaking the neural responses into bins for temporal analysis
+            - drop_invalid: dropping the invalid data (shorter than specified stim_time) or not .
+            - cell_type: type of cells for consideration
+            - save_path: a pickle file to save the extracted data.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+            - fsi_score: if not None, only consider the top face selective cell.
+            - fsi_thres: threshold for face cell selection.
+            - face_response: if not None, use the preloaded face_response
+            - top_k: select the top-k target/distractor faces for decoding
+            - classifier: model for decoding
+            - reg_para: model parameter
+            - kernel: kernel for svm.
+            - degree: degree for poly kernel
+            - num_repeat: repeat for random seeding
+    """
+    # compute the face interaction response from scratch
+    if face_response is None:
+        face_response = get_face_interaction_data(trial_data, trial_info, wall_layout, 
+                        face2id, tolerance=tolerance, stim_start=stim_start, stim_end=stim_end, 
+                        bin_size=bin_size, step_size=step_size,
+                        subset=subset, cell_type=cell_type, fsi_score=fsi_score, fsi_thres=fsi_thres)
+
+    # get the potentially replaying response
+    all_face_firing = []
+    for k in face_response:
+        all_face_firing.extend(face_response[k])
+    all_face_firing = np.array(all_face_firing)
+    filter_rate = np.mean(all_face_firing)*replay_thres
+
+    if replay_response is None:
+        replay_response, replay_target = get_replay_data(trial_data, trial_info, wall_layout, 
+                            face2id, filter_rate, tolerance=tolerance, stim_start=stim_start, stim_end=stim_end, 
+                            bin_size=bin_size, step_size=step_size,
+                            subset=subset, cell_type=cell_type, fsi_score=fsi_score, fsi_thres=fsi_thres)
+        replay_target = [cur.replace('target_', '').split('_')[0] for cur in replay_target]
+
+    # select the top-k faces
+    face_label = dict()
+    for k in face2id:
+        if 'target' in k:
+            face_label[k.replace('target_', '').split('_')[0]] = 1
+        else:
+            face_label[k.replace('target_', '').split('_')[0]] = 0
+            
+    target_face = {k: len(face_response[k]) for k in face_response if face_label[k]==1}
+    distractor_face = {k: len(face_response[k]) for k in face_response if face_label[k]==0}
+    sort_target = {k: v for k, v in sorted(target_face.items(), key=lambda item: item[1], reverse=True)}  
+    sort_distractor = {k: v for k, v in sorted(distractor_face.items(), key=lambda item: item[1], reverse=True)}     
+    target_face = [k for k in list(sort_target.keys())[:top_k]]
+    distractor_face = [k for k in list(sort_distractor.keys())[:top_k]]
+
+    overall_trial_acc, overall_binary_acc, overall_val_binary_acc = [], [], []
+    for repeat_idx in range(num_repeat):
+        label2cls = dict()
+        train_feat = [] 
+        train_label = []
+        face_pool = dict()
+        min_number = min([len(face_response[k]) for k in target_face+distractor_face])
+        for k in target_face:
+            label2cls[k] = len(label2cls)
+            face_pool[k] = 1
+            sample_idx = np.random.choice(len(face_response[k]), min_number, replace=False)
+            train_feat.extend([face_response[k][idx] for idx in sample_idx])
+            train_label.extend([label2cls[k]]*min_number)
+        for k in distractor_face:
+            label2cls[k] = len(label2cls)
+            face_pool[k] = 0
+            sample_idx = np.random.choice(len(face_response[k]), min_number, replace=False)
+            train_feat.extend([face_response[k][idx] for idx in sample_idx])
+            train_label.extend([label2cls[k]]*min_number)
+        train_feat = np.array(train_feat)
+        train_label = np.array(train_label)
+        cls2label = {label2cls[k]: k for k in label2cls}
+
+        train_label_binary = np.array([face_pool[cls2label[label]] for label in train_label])
+        train_feat_binary, val_feat_binary, train_label_binary, val_label_binary = train_test_split(train_feat, train_label_binary,
+                                                                        test_size=0.2, stratify=train_label_binary)
+
+        train_feat, val_feat, train_label, val_label = train_test_split(train_feat, train_label,
+                                                                        test_size=0.2, stratify=train_label)
+
+        # train the classifier
+        # decoding without bining
+        if step_size is None or bin_size is None:
+            if classifier == 'logistic':
+                cls = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+                cls_binary = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat_binary, train_label_binary)
+            elif classifier == 'svc':
+                if kernel == 'linear':
+                    cls = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+                    cls_binary = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat_binary, train_label_binary)
+                else:
+                    cls = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+                    cls_binary = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat_binary, train_label_binary)
+            else:
+                raise NotImplementedError(
+                    "Support for the selected classifier is not implemented yet")
+            
+            overall_val_binary_acc.append(cls_binary.score(val_feat_binary, val_label_binary))
+            pred_label = cls.predict(replay_response)
+            pred_label = [cls2label[cur] for cur in pred_label]
+
+            # compute the binary classification rate
+            binary_cls = np.mean(cls_binary.predict(replay_response[:, bin_idx]))
+            overall_binary_acc.append(binary_cls)
+
+            # compute target face (for the current trial) matching accuracy
+            trial_face_acc = (np.array(pred_label) == np.array(replay_target)).mean()
+            overall_trial_acc.append(trial_face_acc)
+        else:
+            n_sample, n_bin, n_neuron = train_feat.shape
+            binary_cls = []
+            trial_face_acc = []
+            val_binary_cls = []
+            for bin_idx in range(n_bin):
+                if classifier == 'logistic':
+                    cls = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat[:, bin_idx], train_label)
+                    cls_binary = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat_binary[:, bin_idx], train_label_binary)
+                elif classifier == 'svc':
+                    if kernel == 'linear':
+                        cls = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat[:, bin_idx], train_label)
+                        cls_binary = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat_binary[:, bin_idx], train_label_binary)
+                    else:
+                        cls = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat[:, bin_idx], train_label)
+                        cls_binary = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat_binary[:, bin_idx], train_label_binary)
+                else:
+                    raise NotImplementedError(
+                        "Support for the selected classifier is not implemented yet")
+                
+                pred_label = cls.predict(replay_response[:, bin_idx])
+                pred_label = [cls2label[cur] for cur in pred_label]
+                binary_cls.append(np.mean(cls_binary.predict(replay_response[:, bin_idx])))
+                trial_face_acc.append((np.array(pred_label) == np.array(replay_target)).mean())
+                val_binary_cls.append(cls_binary.score(val_feat_binary[:, bin_idx], val_label_binary))
+            
+            overall_binary_acc.append(binary_cls)
+            overall_trial_acc.append(trial_face_acc)
+            overall_val_binary_acc.append(val_binary_cls)
+
+
+    if step_size is None or bin_size is None:
+        overall_val_binary_acc = np.mean(overall_val_binary_acc)
+        overall_binary_acc = np.mean(overall_binary_acc)
+        overall_trial_acc = np.mean(overall_trial_acc)       
+        print('Validation Accuracy for binary classification %.2f' %overall_val_binary_acc)
+        print('Average rate for choosing target faces %.2f' %overall_binary_acc)
+        print('Accuracy for replaying the correct face for the current trial %.2f' %(overall_trial_acc))
+    else:
+        overall_val_binary_acc = np.array(overall_val_binary_acc).mean(0)
+        overall_binary_acc = np.array(overall_binary_acc).mean(0)
+        overall_trial_acc = np.array(overall_trial_acc).mean(0)
+        print('Validation Accuracy:')
+        print(overall_val_binary_acc) 
+
+        plt.close('all')
+        fig, axes = plt.subplots(1, 3, figsize=(10, 5), sharex=True)
+        axes[0].plot(np.arange(1, n_bin+1), overall_binary_acc, c='gray')
+        axes[0].set_xticks(np.arange(1, n_bin+1))
+        axes[0].set_xticklabels([round((stim_start+step_size*bin_idx)*1000) for bin_idx in range(n_bin)])
+        axes[0].set_title('Target vs Distractor')
+        axes[1].plot(np.arange(1, n_bin+1), overall_trial_acc, c='gray')
+        axes[1].set_title('Classification of the current target face')
+        fig.savefig(os.path.join(save_path, 'replaying_decoding.png'), bbox_inches='tight', dpi=400)
+
+def face_cue_decoding(trial_data, cue_time=0.8, stim_start=0.05, stim_end=0.25,
+                          cell_type='rML', subset=None, face2id=None,
+                          trial_info=None, classifier='svc', kernel='linear', degree=3,
+                          reg_para=1, forced_balanced=False, top_k=None, k_fold=8):
+    """ Decoding the identity of cued faces.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - cue_time: time to trigger the cue fixation events
+            - stim_start/end: time to take the average firing rate
+            - cell_type: type of cells for consideration
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+            - face2id: if not None, also compute the face identity for the cue
+            - trial_info: for extracting face identity
+            - classifier: classifier to be used
+            - kernel/degree: svm parameters
+            - reg_para: regularization parameter
+            - forced_balanced: force balanced class labels.
+            - top_k: only select the top-k face 
+    """
+
+    cue_firing, cue_label = compute_cue_firing_rate(trial_data, cue_time, stim_start, stim_end, cell_type, 
+                                                    subset, face2id, trial_info)
+
+    if top_k is not None:
+        valid_label, count = np.unique(cue_label, return_counts=True)
+        valid_label = valid_label[np.argsort(count)[-top_k:]]
+        cue_firing = [cue_firing[i] for i in range(len(cue_label)) if cue_label[i] in valid_label]
+        cue_label = [cue_label[i] for i in range(len(cue_label)) if cue_label[i] in valid_label]
+
+    label2cls = dict()
+    for k in np.unique(cue_label):
+        label2cls[k] = len(label2cls)
+    cue_label = [label2cls[k] for k in cue_label]
+    
+    if forced_balanced:
+        class_data = dict()
+        for i in range(len(cue_label)):
+            if cue_label[i] not in class_data:
+                class_data[cue_label[i]] = []
+            class_data[cue_label[i]].append(cue_firing[i])
+        
+        min_sample = min([len(class_data[k]) for k in class_data])
+        
+        feat, label = [], []
+        for k in class_data:
+            select_idx = np.random.choice(np.arange(len(class_data[k])), min_sample, replace=False)
+            feat.extend([class_data[k][idx] for idx in select_idx])
+            label.extend([k]*min_sample)
+        feat = np.array(feat)
+        label = np.array(label)
+    else:
+        feat = np.array(cue_firing)
+        label = np.array(cue_label)
+    
+    """
+    train_feat, val_feat, train_label, val_label = train_test_split(feat, label,
+                                                                    test_size=0.2, stratify=label)
+    
+    if classifier == 'logistic':
+        cls = LogisticRegression(C=reg_para, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+    elif classifier == 'svc':
+        if kernel == 'linear':
+            cls = LinearSVC(C=reg_para, dual='auto', max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+        else:
+            cls = SVC(kernel=kernel, C=reg_para, degree=degree, max_iter=3000, class_weight='balanced').fit(train_feat, train_label)
+    else:
+        raise NotImplementedError(
+            "Support for the selected classifier is not implemented yet")
+    print('Decoding Accuracy is %.2f (baseline: %.2f)' %(cls.score(val_feat, val_label), 1/len(label2cls)))
+
+    """
+
+    acc = kfold_cross_validation(feat, label, k_fold, classifier, reg_para, 
+                                 kernel=kernel, degree=degree)
+    print('Decoding Accuracy is %.2f (baseline: %.2f)' %(acc, 1/len(label2cls)))
+
+        
+
+            

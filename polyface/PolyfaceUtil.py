@@ -6,6 +6,7 @@ import time
 import pickle
 from polyface.MiscUtil import do_intersect
 from matplotlib import pyplot as plt
+import matplotlib.patches as patches
 
 # room boundary of the polyface task
 PolyFaceLayout = {'circle': [[-5, -1], [-6.4, -2]],
@@ -18,6 +19,12 @@ CorridorLayout = [[[-5.8, -4.2], [3, 4.8]],
                 [[-3, -2.24], [-1.9, -0.56]],
                 [[-0.83, 1.7], [-4.3, -3.6]],
                 [[-0.33, 1.75], [1.2, 1.95]]]
+
+# predefine color for different rooms, corridor has white color
+room_color = {'circle': 'red', 'rectangle': 'aqua',
+              'diamond': 'green', 'triangle': 'yellow',
+              'corridor': 'purple'
+              }
 
 def find_closest(number, num_list):
     diff = np.abs(number-num_list)
@@ -638,3 +645,352 @@ def find_passage(player_data, place_field, pf_size,
             start = None
     
     return passage
+
+def get_face_interaction_data(trial_data, trial_info, wall_layout, face2id,
+                        tolerance=8, stim_start=0.05, stim_end=0.4, bin_size=None, step_size=None,
+                        drop_invalid=True, cell_type='rML', subset=None, fsi_score=None, fsi_thres=0.2):
+    """ Extract the neural data when looking at a face in the arena.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - trial_info: trial info read by MinosData.
+            - wall_layout: wall positions of the polyface environment.
+            - face2id: face2id mapping
+            - tolerance: tolerance angle between eye/object ray (to be changed to distance-based measurement).
+            - stim_start/end: start/end time to extract the neural responses, aligned to onset.
+            - step_size: step size for bining, None for not bining
+            - bin_size: breaking the neural responses into bins for temporal analysis, None for not bining
+            - drop_invalid: dropping the invalid data (shorter than specified stim_time) or not .
+            - cell_type: type of cells for consideration
+            - save_path: a pickle file to save the extracted data.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+            - fsi_score: if not None, only consider the top face selective cell.
+            - fsi_thres: threshold for face cell selection.        
+        Returns:
+            Neural responses when interacting with different faces (stored as a dictionary).
+    """
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]
+
+    if fsi_score is not None:
+        cell_idx = [cell_idx[idx] for idx in range(len(cell_idx)) if fsi_score[idx]>fsi_thres]
+
+    # get the locations of faces in different trials
+    face_loc = get_face_pos(trial_info)
+    id2face = {face2id[k]: k for k in face2id}
+
+    # initialize face response structure
+    face_response = dict()
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        if subset is not None and trial_number not in subset:
+            continue
+
+        # determine the type of the current trial
+        for type_ in ['End_Correct', 'End_Miss', 'End_Wrong']:
+            if not np.isnan(trial_data['Paradigm']['PolyFaceNavigator'][type_][trial_idx]):
+                cur_type = type_
+                break
+    
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx]
+        trial_offset = trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx]
+
+        # obtain eye interaction periods
+        interaction_block = eye_face_interaction(trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx],
+                                                trial_data['Paradigm']['PolyFaceNavigator']['Eye_arena'][trial_idx],
+                                                face_loc[trial_number], tolerance=tolerance, wall_layout=wall_layout)
+
+        # measure PSTH for each individual face interaction event
+        for face in interaction_block:
+            face_name = id2face[face].replace('target_', '').split('_')[0]
+            if face_name not in face_response:
+                face_response[face_name] = []
+
+            for event in interaction_block[face]:
+                if event[0]-trial_onset <= stim_start: # ignore events that are too close to cue phase
+                    continue
+                event_time = event[1]-event[0]
+                event_onset = event[0]+stim_start
+                if event_time<(stim_end-stim_start):
+                    if drop_invalid:
+                        continue
+                    else:
+                        event_offset = event[1]
+                else:
+                    event_offset = event_onset + stim_end
+
+                if bin_size is None or step_size is None:
+                    tmp_firing = []
+                    for neuron_idx, neuron in enumerate(cell_idx):
+                        neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
+
+                        # compute the averaged firing rate throughout the whole stim onset time
+                        spike_count = len([1 for spike_time in neuron_spikes 
+                                    if spike_time>=event_onset and spike_time<=event_offset])
+                        firing_rate = spike_count/(stim_end-stim_start)
+                        tmp_firing.append(firing_rate)
+                else:
+                    num_bin = int((stim_end-stim_start-bin_size)//step_size) + 1
+                    tmp_firing = [[] for _ in range(num_bin)]
+
+                    for neuron_idx, neuron in enumerate(cell_idx):
+                        neuron_spikes = [cur for cur in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]]
+                        for bin_idx in range(num_bin):
+                            cur_onset = event_onset + bin_size*step_size
+                            cur_offset = event_onset + bin_size*(step_size+1)
+
+                            # compute the averaged firing rate throughout the whole stim onset time
+                            spike_count = len([1 for spike_time in neuron_spikes 
+                                        if spike_time>=cur_onset and spike_time<=cur_offset])
+                            firing_rate = spike_count/(stim_end-stim_start)
+                            tmp_firing[bin_idx].append(firing_rate)                    
+                    
+                face_response[face_name].append(np.array(tmp_firing))
+        
+    return face_response
+                
+def get_replay_data(trial_data, trial_info, wall_layout, face2id, filter_rate,
+                        tolerance=8, stim_start=0.05, stim_end=0.4, bin_size=None, step_size=None,
+                        drop_invalid=True, cell_type='rML', subset=None, fsi_score=None, fsi_thres=0.2):
+    """ Extract the neural data when looking at a face in the arena.
+
+        Inputs:
+            - trial_data: pre-processed trial data.
+            - trial_info: trial info read by MinosData.
+            - wall_layout: wall positions of the polyface environment.
+            - face2id: face2id mapping
+            - filter_rate: average firing rate for filtering the "replay" period
+            - tolerance: tolerance angle between eye/object ray (to be changed to distance-based measurement).
+            - stim_start/end: start/end time to extract the neural responses, aligned to onset.
+            - step_size: step size for bining, None for not bining
+            - bin_size: breaking the neural responses into bins for temporal analysis, None for not bining
+            - drop_invalid: dropping the invalid data (shorter than specified stim_time) or not .
+            - cell_type: type of cells for consideration
+            - save_path: a pickle file to save the extracted data.
+            - subset: If not None, only compute the stat based on the given subset of trial number.
+            - fsi_score: if not None, only consider the top face selective cell.
+            - fsi_thres: threshold for face cell selection.        
+        Returns:
+            - Neural responses for replaying
+            - Target face associated with each replaying session
+            - Last viewing face associated with each replaying session
+    """
+
+    # get the index of selected cells
+    cell_idx = [idx for idx in range(len(trial_data['Neuron_type'])) 
+            if trial_data['Neuron_type'][idx]==cell_type]
+
+    if fsi_score is not None:
+        cell_idx = [cell_idx[idx] for idx in range(len(cell_idx)) if fsi_score[idx]>fsi_thres]
+
+    # get the locations of faces in different trials
+    face_loc = get_face_pos(trial_info)
+    id2face = {face2id[k]: k for k in face2id}
+
+    # initialize face response structure
+    replay_response = []
+    replay_target_face = []
+
+    # iterate through all trials
+    for trial_idx in range(len(trial_data['Paradigm']['PolyFaceNavigator']['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+        trial_number = trial_data['Paradigm']['PolyFaceNavigator']['Number'][trial_idx]
+
+        cur_target_face = [k for k in face_loc[trial_number] if face_loc[trial_number][k]['isTarget']]
+        cur_target_face = id2face[cur_target_face[0]]
+
+        if subset is not None and trial_number not in subset:
+            continue
+
+        # determine the type of the current trial
+        for type_ in ['End_Correct', 'End_Miss', 'End_Wrong']:
+            if not np.isnan(trial_data['Paradigm']['PolyFaceNavigator'][type_][trial_idx]):
+                cur_type = type_
+                break
+    
+        trial_onset = trial_data['Paradigm']['PolyFaceNavigator']['Start'][trial_idx]
+        trial_offset = trial_data['Paradigm']['PolyFaceNavigator'][cur_type][trial_idx]
+
+        # obtain eye interaction periods
+        interaction_block = eye_face_interaction(trial_data['Paradigm']['PolyFaceNavigator']['Player'][trial_idx],
+                                                trial_data['Paradigm']['PolyFaceNavigator']['Eye_arena'][trial_idx],
+                                                face_loc[trial_number], tolerance=tolerance, wall_layout=wall_layout)
+
+        # collect the neural data when passing through different locations
+        # reorganize the neuron responses (may lose tiny precision)
+        time_window = int((trial_offset-trial_onset)*1000)
+        processed_neuron_spikes = np.zeros([time_window, len(cell_idx)])
+        for neuron_idx, neuron in enumerate(cell_idx):
+            for cur_spike in trial_data['Paradigm']['PolyFaceNavigator']['Spike'][trial_idx][neuron]:
+                if cur_spike<trial_onset:
+                    continue
+                spike_time = int((cur_spike-trial_onset)*1000)-1
+                processed_neuron_spikes[spike_time, neuron_idx] += 1
+
+        # first collect face interaction periods
+        all_face_event = []
+        for face in interaction_block:
+            for event in interaction_block[face]:
+                all_face_event.append((event[0], event[1]))
+        all_face_event = sorted(all_face_event)
+        
+        # collect all non-face interaction periods
+        buffer = 0.2 # ignore the period right before/after looking at a face
+        non_face_event = []
+        current_time = trial_onset
+        for idx, (start, end) in enumerate(all_face_event):
+            adjusted_start = max(trial_onset, start - buffer)
+            adjusted_end = min(trial_offset, end + buffer)
+            if adjusted_start > current_time:
+                non_face_event.append((current_time, adjusted_start))
+            current_time = max(current_time, adjusted_end)    
+
+        if current_time < trial_offset:
+            non_face_event.append((current_time, trial_offset))
+
+        # scan through each event and locate sub-periods with potential replaying
+        for idx, event in enumerate(non_face_event):
+            if event[1]-event[0]<stim_end:
+                continue
+            
+            start_idx = int((event[0]-trial_onset)*1000)-1
+            end_idx = int((event[1]-trial_onset)*1000)-1
+            search_size = 20
+            while start_idx+int(stim_end*1000)<end_idx:
+                cur_firing = (processed_neuron_spikes[start_idx:start_idx+int(stim_end*1000)].sum(0)/stim_end).mean()
+                if cur_firing >= filter_rate:
+                    num_bin = int((stim_end-stim_start-bin_size)//step_size) + 1
+                    tmp_firing = []
+                    for bin_idx in range(num_bin):
+                        tmp_start, tmp_end = start_idx+bin_idx*int(step_size*1000), start_idx+bin_idx*int(step_size*1000)+int(bin_size*1000)
+                        tmp_firing.append(
+                            processed_neuron_spikes[tmp_start:tmp_end].sum(0)/bin_size)
+
+                    replay_response.append(tmp_firing)
+                    replay_target_face.append(cur_target_face)
+                    break
+                start_idx += search_size
+    
+    replay_response = np.array(replay_response)
+    return replay_response, replay_target_face
+
+
+def plot_raster(trial_data, paradigm, save_dir, save_format='pdf', trial_info=None,
+                eye_interaction=False, spatial_overlay=False,
+                continuous_only=False, tolerance=15, wall_layout=None):
+    """ Visualizing the raster plot for a single trial. The
+    plot is divided into different blocks based on a set of discrete events.
+    It also supports using background color to incorporate eye interactions
+    within the visual scene (e.g., for Polyface).
+
+    Inputs:
+        trial_data: preprocessed dictionary.
+        paradigm: paradigm for visualization.
+        save_format: format for saving the visualization.
+        trial_info: trial info read by MinosData, for eye interaction.
+        eye_interaction: adding eye interaction data or not.
+        spatial_overlay: add spatial position as background color
+        save_dir: directory for the saved visualization.
+        continuous_only: only consider continuous trials (Polyface only).
+        tolerance: tolerance for matching eye ray and ray cast toward the object.
+        wall_layout: wall positions of the polyface environment.
+    """
+
+    if paradigm == 'PolyFaceNavigator':
+        # discrete event for creating the blocks
+        discrete_events = ['On','Off', 'Start', 'End']
+        # types of trials based on behaviors
+        trial_type = ['End_Correct', 'End_Miss', 'End_Wrong']
+    else:
+        # discrete event for creating the blocks
+        discrete_events = ['Start_Align','End']
+        # types of trials based on behaviors
+        trial_type = ['End_Correct', 'End_Miss']
+    
+    for type_ in trial_type:
+        os.makedirs(os.path.join(save_dir, type_), exist_ok=True)
+
+    if eye_interaction:
+        assert trial_info is not None, 'Eye interaction enabled but trial info not given'
+        face_loc = get_face_pos(trial_info)
+
+    # one plot for each trial
+    for trial_idx in range(len(trial_data['Paradigm'][paradigm]['Number'])):
+        # temporarily remove bad data
+        if trial_idx == 158:
+            break
+
+        # skip easy trials 
+        if continuous_only and not trial_data['Paradigm'][paradigm]['isContinuous']:
+            continue
+
+        trial_number = trial_data['Paradigm'][paradigm]['Number'][trial_idx]
+
+        # determine the type of the current trial
+        for type_ in trial_type:
+            if not np.isnan(trial_data['Paradigm'][paradigm][type_][trial_idx]):
+                cur_type = type_
+                break
+        
+        offset = 0.2 # 200ms offset of visualization
+        trial_onset = trial_data['Paradigm'][paradigm]['On'][trial_idx] if paradigm == 'PolyFaceNavigator' else trial_data['Paradigm'][paradigm]['Start_Align'][trial_idx]
+        trial_len = trial_data['Paradigm'][paradigm][cur_type][trial_idx] - trial_onset 
+
+        # basic raster plot
+        plt.close('all')
+        fig = plt.figure()
+        ax = plt.gca()
+        ax.set_ylim(0, len(trial_data['Neuron_type'])+10)
+
+        for neuron in range(len(trial_data['Paradigm'][paradigm]['Spike'][trial_idx])):
+            spike_time = [cur-trial_onset for cur in trial_data['Paradigm'][paradigm]['Spike'][trial_idx][neuron]]
+            ax.scatter(spike_time, [neuron+5]*len(spike_time), c='black', marker='.', s=0.2)
+        
+        for event in discrete_events:
+            if paradigm == 'PolyFaceNavigator' and event == 'End':
+                event = cur_type
+            ax.axvline(x = trial_data['Paradigm'][paradigm][event][trial_idx]-trial_onset, color = 'gray', linewidth=2, alpha=1)
+
+        # add spatial background
+        if spatial_overlay:
+            room_block = get_room_loc(trial_data['Paradigm'][paradigm]['Player'][trial_idx],
+                                      trial_data['Paradigm'][paradigm]['Start'][trial_idx],
+                                      trial_data['Paradigm'][paradigm][cur_type][trial_idx])
+
+            for room in room_block:
+                for block in room_block[room]:
+                    # filter the cue phase
+                    if block[1] <= trial_data['Paradigm'][paradigm]['Off'][trial_idx]:
+                        continue
+                    elif block[0] <= trial_data['Paradigm'][paradigm]['Off'][trial_idx]:
+                        block[0] = trial_data['Paradigm'][paradigm]['Off'][trial_idx]
+
+                    ax.axvspan(block[0]-trial_onset, block[1]-trial_onset, facecolor=room_color[room], alpha=0.2)
+
+        # add eye-face interaction as stripes below the x-axis
+        if eye_interaction:
+            interaction_block = eye_face_interaction(trial_data['Paradigm'][paradigm]['Player'][trial_idx],
+                                                    trial_data['Paradigm'][paradigm]['Eye_arena'][trial_idx],
+                                                    face_loc[trial_number], tolerance=tolerance, wall_layout=wall_layout)
+            
+            for face in interaction_block:
+                color = 'red' if face_loc[trial_number][face]['isTarget'] else 'blue'
+                for block in interaction_block[face]:
+                    rect = patches.Rectangle((block[0]-trial_onset, 0), block[1]-block[0], 3, 
+                                                color=color, alpha=1)   
+                    ax.add_patch(rect)         
+
+        # save the plot
+        fig.set_size_inches(10, 10)
+        fig.savefig(os.path.join(save_dir, type_, str(trial_number)+'.'+save_format), bbox_inches='tight')
