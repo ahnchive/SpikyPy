@@ -6,6 +6,7 @@ import json
 from minos.MinosData import MinosData
 from scipy.io import loadmat
 from polyface.PolyfaceUtil import process_trial, align_trial, find_closest
+from glob import glob
 
 def cropped_spike_period(spike_data, start, end):
     spike_data = [np.array(unit) for unit in spike_data]  # Convert to NumPy arrays
@@ -23,6 +24,67 @@ def MatStruct2Dict(struct):
 
     return processed_dict
 
+def process_trial_info(trial_info, paradigm):
+    """ Reorganize the trial info based on the type of paradigm 
+    for downstream processing. The stored information follows the
+    convention of the original Spiky (remaining information can be read from Json file
+    in Polyface).
+    """
+    processed_trial_info = dict()
+    if paradigm == 'FiveDot':
+        processed_trial_info['Timestamp'] = trial_info['Timestamp']
+        processed_trial_info['Number'] = trial_info['Number']
+        processed_trial_info['Size'] = trial_info['Size']
+        processed_trial_info['Pos'] = []
+        for i in range(len(trial_info['Number'])):
+            processed_trial_info['Pos'].append([trial_info['PosX'][i],
+                                              trial_info['PosY'][i],
+                                              trial_info['PosZ'][i]])
+    elif paradigm == 'PassiveFixation':
+        # passive fixation has unique trial number
+        processed_trial_info['Timestamp'] = trial_info['Timestamp']
+        processed_trial_info['Number'] = trial_info['Number']
+        processed_trial_info['DotSize'] = trial_info['DotSize']
+        processed_trial_info['StimSize'] = trial_info['StimSize']
+        processed_trial_info['Stimulus'] = trial_info['Stimulus']
+        processed_trial_info['DotPos'] = []
+        processed_trial_info['StimPos'] = []
+        for i in range(len(trial_info['Number'])):
+            processed_trial_info['DotPos'].append([trial_info['DotPosX'][i],
+                                              trial_info['DotPosY'][i],
+                                              trial_info['DotPosZ'][i]])
+            processed_trial_info['StimPos'].append([trial_info['StimPosX'][i],
+                                              trial_info['StimPosY'][i],
+                                              trial_info['StimPosZ'][i]])
+    elif paradigm == 'PolyFaceNavigator':
+        # polyface has multiple stimuli and thus need to reorganize them by trial number first
+        processed_trial_info['Timestamp'] = []
+        processed_trial_info['Number'] = []
+        processed_trial_info['Index'] = []
+        processed_trial_info['FaceId'] = []
+        processed_trial_info['Type'] = []
+        processed_trial_info['Position'] = []
+        processed_trial_info['Rotation'] = []
+        for i in range(len(trial_info['Number'])):
+            # only consider the cue for data storage (use downstream analysis code to access the other data)
+            if trial_info['Type'][i] != 'Stimulus':
+                continue
+            processed_trial_info['Timestamp'].append(trial_info['Timestamp'][i])
+            processed_trial_info['Number'].append(trial_info['Number'][i])
+            processed_trial_info['Index'].append(trial_info['Index'][i])
+            processed_trial_info['FaceId'].append(trial_info['FaceId'][i])
+            processed_trial_info['Type'].append(trial_info['Type'][i])
+            processed_trial_info['Position'].append([trial_info['PositionX'][i],
+                                              trial_info['PositionY'][i],
+                                              trial_info['PositionZ'][i]])            
+            processed_trial_info['Rotation'].append([trial_info['RotationX'][i],
+                                              trial_info['RotationY'][i],
+                                              trial_info['RotationZ'][i]])    
+    else:
+        NotImplementedError('Selected paradigm not supported for processing')
+
+    return processed_trial_info
+            
 def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_after=0, eye_offset=False):
     """ A temporarily super-script for reading Minos data
     from temporary Matlab files, and merging them into one dictionary.
@@ -144,7 +206,99 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
             trial_spike = cropped_spike_period(spike_data, start_time, end_time)
             processed_trial[paradigm]['Spike'].append(trial_spike)
         
-    
     final_data = {'Neuron_type': neuron_type, 'Paradigm': processed_trial}
 
     return final_data
+
+def MinosPythonWrapper(minos_dir):
+    """ Super-script for reading raw Minos data from the output directory, and merging them 
+    into one dictionary. Note that the code only process the behavioral data, without synchronization. 
+    For synchronization/integration of neural data, please further use MinosIO.
+
+    Input:
+        minos_dir: Directory storing raw Minos files.
+
+    Return:
+        A dictionary storing the behavioral data for all available paradigms.
+    """
+
+    # load the eye, player, reward and sync data independent of paradigms
+    eye_data = MinosData(os.path.join(minos_dir, 'Minos', 'Eye.bin')).Values
+    player_data = MinosData(os.path.join(minos_dir, 'Minos', 'Player.bin')).Values
+    reward_data = MinosData(os.path.join(minos_dir, 'Minos', 'Reward.bin')).Values
+
+    # iterate through all paradigms
+    processed_trial = dict()
+    all_paradigm = [os.path.basename(cur).replace(' ', '') for cur in glob(os.path.join(minos_dir, 'Minos', '*')) 
+                if os.path.isdir(cur) and 'Assets' not in cur]
+    for paradigm in all_paradigm:
+        processed_trial[paradigm] = dict()
+        tmp_trial_data = MinosData(os.path.join(minos_dir, 'Minos', ' '.join(re.split(r'(?<!^)(?=[A-Z])', paradigm)), 
+                                'Trials.bin')).Values
+        tmp_trial_info = MinosData(os.path.join(minos_dir, 'Minos', ' '.join(re.split(r'(?<!^)(?=[A-Z])', paradigm)), 
+                                'TrialInfo.bin')).Values
+        tmp_trial_info = process_trial_info(tmp_trial_info, paradigm)
+        for k in tmp_trial_info:
+            processed_trial[paradigm][k] = []
+
+        if paradigm != 'PolyFaceNavigator':
+            tmp_trial_data = process_trial(tmp_trial_data, filtered_start='Start_Align', filtered_end='End')
+            processed_trial[paradigm]['Eye'] = []
+        else:   
+            tmp_trial_data = process_trial(tmp_trial_data, filtered_start='Start', filtered_end='End')
+            processed_trial[paradigm]['Player'] = [] 
+            processed_trial[paradigm]['Eye_cue'] = []
+            processed_trial[paradigm]['Eye_arena'] = []
+            processed_trial[paradigm]['isContinuous'] = []
+            processed_trial[paradigm]['Reward'] = []
+
+        for idx in range(len(tmp_trial_info['Number'])):
+            trial_num = tmp_trial_info['Number'][idx]
+            if trial_num not in tmp_trial_data:
+                continue
+            if paradigm != 'PolyFaceNavigator':
+                # align eye data
+                start_idx, end_idx = align_trial(trial_num, eye_data, tmp_trial_data, 'Start_Align', 'End')
+                aligned_eye = {k: eye_data[k][start_idx:end_idx] for k in eye_data}
+                processed_trial[paradigm]['Eye'].append(aligned_eye)
+            else:        
+                # align eye data during cue phase
+                start_idx, end_idx = align_trial(trial_num, eye_data, tmp_trial_data, 'On', 'Off')
+                aligned_eye_cue = {k: eye_data[k][start_idx:end_idx] for k in eye_data}
+
+                # align eye data during navigation phase
+                start_idx, end_idx = align_trial(trial_num, eye_data, tmp_trial_data, 'Start', 'End')
+                aligned_eye_arena = {k: eye_data[k][start_idx:end_idx] for k in eye_data}
+
+                # align player data
+                start_idx, end_idx = align_trial(trial_num, player_data, tmp_trial_data, 'Start', 'End')
+                aligned_player = {k: player_data[k][start_idx:end_idx] for k in player_data}
+
+                # align reward
+                start_time, end_time = aligned_eye_arena['Timestamp'][0], aligned_eye_arena['Timestamp'][-1]
+                aligned_reward = [cur for cur in reward_data['Timestamp'] if cur >=start_time and cur<=end_time]
+
+                processed_trial[paradigm]['Eye_cue'].append(aligned_eye_cue)
+                processed_trial[paradigm]['Eye_arena'].append(aligned_eye_arena)
+                processed_trial[paradigm]['Player'].append(aligned_player)
+                processed_trial[paradigm]['Reward'].append(aligned_reward)
+
+            # merging data from trial data
+            for k in tmp_trial_data[trial_num]:
+                if k not in processed_trial[paradigm]:
+                    processed_trial[paradigm][k] = []
+                processed_trial[paradigm][k].append(tmp_trial_data[trial_num][k])
+            
+            # merge data from trial info
+            for k in tmp_trial_info:
+                if k not in processed_trial[paradigm]:
+                    processed_trial[paradigm][k] = []
+                processed_trial[paradigm][k].append(tmp_trial_info[k][idx])                
+
+            
+    return {'Paradigm': processed_trial}
+
+
+
+
+
