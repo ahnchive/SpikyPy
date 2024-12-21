@@ -226,6 +226,8 @@ def MinosPythonWrapper(minos_dir):
     eye_data = MinosData(os.path.join(minos_dir, 'Minos', 'Eye.bin')).Values
     player_data = MinosData(os.path.join(minos_dir, 'Minos', 'Player.bin')).Values
     reward_data = MinosData(os.path.join(minos_dir, 'Minos', 'Reward.bin')).Values
+    sync_data = MinosData(os.path.join(minos_dir, 'Minos', 'Sync.bin')).Values
+    sync_start = sync_data['Timestamp'][0] # use the first sync time as start time of the system
 
     # iterate through all paradigms
     processed_trial = dict()
@@ -295,8 +297,12 @@ def MinosPythonWrapper(minos_dir):
                     processed_trial[paradigm][k] = []
                 processed_trial[paradigm][k].append(tmp_trial_info[k][idx])                
 
-            
-    return {'Paradigm': processed_trial}
+    # correct the time based on the first sync time (from 100ns to second)
+    for k in processed_trial:
+        processed_trial[k]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Timestamp']] 
+    sync_data['Timestamp'] = [(t-sync_start)/1e7 for t in sync_data['Timestamp']] 
+
+    return {'Paradigm': processed_trial, 'Sync':sync_data}
 
 
 
