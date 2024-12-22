@@ -299,7 +299,14 @@ def MinosPythonWrapper(minos_dir):
 
     # correct the time based on the first sync time (from 100ns to second)
     for k in processed_trial:
-        processed_trial[k]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Timestamp']] 
+        processed_trial[k]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Timestamp']]
+        for trial_idx in range(len(processed_trial[k]['Number'])):
+            if 'Eye' in processed_trial[k]:
+                processed_trial[k]['Eye'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye'][trial_idx]['Timestamp']]
+            else:
+                processed_trial[k]['Eye_cue'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_cue'][trial_idx]['Timestamp']]
+                processed_trial[k]['Eye_arena'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_arena'][trial_idx]['Timestamp']]
+                processed_trial[k]['Player'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Player'][trial_idx]['Timestamp']]
     sync_data['Timestamp'] = [(t-sync_start)/1e7 for t in sync_data['Timestamp']] 
 
     return {'Paradigm': processed_trial, 'Sync':sync_data}
