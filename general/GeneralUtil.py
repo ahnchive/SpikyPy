@@ -221,6 +221,9 @@ def MinosPythonWrapper(minos_dir):
     Return:
         A dictionary storing the behavioral data for all available paradigms.
     """
+    # pre specify a set of keyword related to time
+    time_related_key = ['Timestamp', 'Start_Align', 'End', 'End_Miss', 'End_Correct', 'Loading', 'Align_Loading',
+                        'On', 'Off', 'End_Wrong', 'ParadigmStop', 'ParadigmStart']
 
     # load the eye, player, reward and sync data independent of paradigms
     eye_data = MinosData(os.path.join(minos_dir, 'Minos', 'Eye.bin')).Values
@@ -299,7 +302,9 @@ def MinosPythonWrapper(minos_dir):
 
     # correct the time based on the first sync time (from 100ns to second)
     for k in processed_trial:
-        processed_trial[k]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Timestamp']]
+        for t_keyword in time_related_key:
+            if t_keyword in processed_trial[k]:
+                processed_trial[k][t_keyword] = [(t-sync_start)/1e7 if not np.isnan(t) else t for t in processed_trial[k][t_keyword]]
         for trial_idx in range(len(processed_trial[k]['Number'])):
             if 'Eye' in processed_trial[k]:
                 processed_trial[k]['Eye'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye'][trial_idx]['Timestamp']]
@@ -307,6 +312,8 @@ def MinosPythonWrapper(minos_dir):
                 processed_trial[k]['Eye_cue'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_cue'][trial_idx]['Timestamp']]
                 processed_trial[k]['Eye_arena'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_arena'][trial_idx]['Timestamp']]
                 processed_trial[k]['Player'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Player'][trial_idx]['Timestamp']]
+                processed_trial[k]['Reward'][trial_idx] = [(t-sync_start)/1e7 for t in processed_trial[k]['Reward'][trial_idx]]
+
     sync_data['Timestamp'] = [(t-sync_start)/1e7 for t in sync_data['Timestamp']] 
 
     return {'Paradigm': processed_trial, 'Sync':sync_data}
