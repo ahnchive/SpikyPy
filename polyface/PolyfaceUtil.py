@@ -56,7 +56,8 @@ def align_trial(trial_num, behavior_data, trial_data, start_event='Start', end_e
     cur_trial = trial_data[trial_num]
     start_time = cur_trial[start_event]
     if end_event == 'End' and end_event not in cur_trial:
-        end_event = [cur for cur in ['End_Correct', 'End_Miss', 'End_Wrong'] if cur in cur_trial][0]
+        end_event = [cur for cur in ['End_Correct', 'End_Miss', 'End_Wrong'] 
+                    if cur in cur_trial and not np.isnan(cur_trial[cur])][0]    
     end_time = cur_trial[end_event]
     start_idx = find_closest(start_time, behavior_data['Timestamp'])
     end_idx = find_closest(end_time, behavior_data['Timestamp'])
@@ -78,6 +79,8 @@ def process_trial(trial_data, filtered_start='Start', filtered_end='End_Correct'
             processed_trial[trial_num] = dict()
         processed_trial[trial_num][trial_data['Event'][i]] = trial_data['Timestamp'][i]
     
+    valid_end_condition = dict()
+
     for k in list(processed_trial.keys()):
         if not filtered_start in processed_trial[k]:
             del processed_trial[k]
@@ -85,9 +88,19 @@ def process_trial(trial_data, filtered_start='Start', filtered_end='End_Correct'
             if filtered_end !='End' and not filtered_end in processed_trial[k]:
                 del processed_trial[k]
             elif filtered_end =='End':
-                check_valid = [cur for cur in ['End','End_Correct', 'End_Miss', 'End_Wrong'] if cur in processed_trial[k]]
+                check_valid = [cur for cur in ['End', 'End_Correct', 'End_Miss', 'End_Wrong'] if cur in processed_trial[k]]
                 if len(check_valid) == 0:
                     del processed_trial[k]
+                
+                for end_cond in check_valid:
+                    valid_end_condition[end_cond] = 1
+
+    # fill in all end condition (e.g., fill nan in End_Miss for correct trials)
+    for trial_num in processed_trial:
+        for end_cond in valid_end_condition:
+            if end_cond not in processed_trial[trial_num]:
+                processed_trial[trial_num][end_cond] = np.nan
+
     return processed_trial
 
 def get_valid_face(trial_info, id2face):
