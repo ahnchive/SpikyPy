@@ -282,6 +282,7 @@ def MinosPythonWrapper(minos_dir):
                 # align reward
                 start_time, end_time = aligned_eye_arena['Timestamp'][0], aligned_eye_arena['Timestamp'][-1]
                 aligned_reward = [cur for cur in reward_data['Timestamp'] if cur >=start_time and cur<=end_time]
+                aligned_reward = {'Timestamp': aligned_reward}
 
                 processed_trial[paradigm]['Eye_cue'].append(aligned_eye_cue)
                 processed_trial[paradigm]['Eye_arena'].append(aligned_eye_arena)
@@ -312,7 +313,7 @@ def MinosPythonWrapper(minos_dir):
                 processed_trial[k]['Eye_cue'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_cue'][trial_idx]['Timestamp']]
                 processed_trial[k]['Eye_arena'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Eye_arena'][trial_idx]['Timestamp']]
                 processed_trial[k]['Player'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Player'][trial_idx]['Timestamp']]
-                processed_trial[k]['Reward'][trial_idx] = [(t-sync_start)/1e7 for t in processed_trial[k]['Reward'][trial_idx]]
+                processed_trial[k]['Reward'][trial_idx]['Timestamp'] = [(t-sync_start)/1e7 for t in processed_trial[k]['Reward'][trial_idx]['Timestamp']]
 
     sync_data['Timestamp'] = [(t-sync_start)/1e7 for t in sync_data['Timestamp']] 
 
