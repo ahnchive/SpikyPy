@@ -7,10 +7,19 @@ from minos.MinosData import MinosData
 from scipy.io import loadmat
 from polyface.PolyfaceUtil import process_trial, align_trial, find_closest
 from glob import glob
+from numba import njit
+
+@njit
+def cropped_spike_period_unit(unit, start, end):
+    result = []
+    for value in unit:
+        if start < value < end:
+            result.append(value)
+    return np.array(result)
 
 def cropped_spike_period(spike_data, start, end):
-    spike_data = [np.array(unit) for unit in spike_data]  # Convert to NumPy arrays
-    return [unit[(unit > start) & (unit < end)].tolist() for unit in spike_data]
+    results = [cropped_spike_period_unit(unit, start, end) for unit in spike_data]
+    return results
 
 def MatStruct2Dict(struct):
     """ Converting Matlab struct data into dictionary in Python.
@@ -124,6 +133,7 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
     ephys_data = loadmat(os.path.join(minos_dir, 
                         session_name+'.spiky.ephys.SpikeInfo.mat'), simplify_cells=True)['data']['Value']
     spike_data = [ephys_data['Spikes']['Value'][unit]['T_'] for unit in range(len(ephys_data['Spikes']['Value']))]
+    spike_data = [np.array(unit) for unit in spike_data] 
     neuron_type = json.load(open(os.path.join(tmp_dir, 'neuron_type.json')))
 
     # merge the behavioral data and neural data
@@ -210,14 +220,15 @@ def MinosMatlabWrapper(minos_dir, tmp_dir, ephys_offset_before=0, ephys_offset_a
 
     return final_data
 
-def MinosPythonWrapper(minos_dir):
+def MinosPythonWrapper(minos_dir, eye_offset_before=0, eye_offset_after=0, eye_offset=False):
     """ Super-script for reading raw Minos data from the output directory, and merging them 
     into one dictionary. Note that the code only process the behavioral data, without synchronization. 
     For synchronization/integration of neural data, please further use MinosIO.
 
     Input:
         minos_dir: Directory storing raw Minos files.
-
+        eye_offset_before/after: include offset before and after each trial (time in second)
+        eye_offset: temporary option to also save the eye data for offset periods.
     Return:
         A dictionary storing the behavioral data for all available paradigms.
     """
@@ -264,6 +275,16 @@ def MinosPythonWrapper(minos_dir):
             if paradigm != 'PolyFaceNavigator':
                 # align eye data
                 start_idx, end_idx = align_trial(trial_num, eye_data, tmp_trial_data, 'Start_Align', 'End')
+
+                if eye_offset:
+                    adjusted_start_time = tmp_trial_data[trial_num]['Start_Align']-eye_offset_before*1e7
+                    start_idx = find_closest(adjusted_start_time, eye_data['Timestamp'])
+                    if 'End_Miss' in tmp_trial_data[trial_num]:
+                        adjusted_end_time = tmp_trial_data[trial_num]['End_Miss']+eye_offset_after*1e7
+                    else:
+                        adjusted_end_time = tmp_trial_data[trial_num]['End_Correct']+eye_offset_after*1e7
+                    end_idx = find_closest(adjusted_end_time, eye_data['Timestamp'])
+
                 aligned_eye = {k: eye_data[k][start_idx:end_idx] for k in eye_data}
                 processed_trial[paradigm]['Eye'].append(aligned_eye)
             else:        
